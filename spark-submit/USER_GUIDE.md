@@ -15,15 +15,20 @@
 
 ## 快速开始
 
-### 第一步：下载可执行文件
+### 第一步：生成可执行文件
 
-从项目发布页面下载 `spark-submit` 和 `spark-sql` 可执行文件：
+进入项目目录，使用构建脚本生成 `spark-submit` 和 `spark-sql` 可执行文件：
 
 ```bash
-# 下载工具文件
-# 赋予执行权限
-chmod +x spark-submit spark-sql
+cd aliyun-emapreduce-ack-toolkit/spark-submit
+
+# 运行构建脚本（需要 Maven 环境）
+./create-spark-submit.sh
 ```
+
+构建完成后，将在当前目录生成以下可执行文件：
+- `spark-submit` - Spark 作业提交工具
+- `spark-sql` - Spark SQL 执行工具
 
 ### 第二步：添加到系统 PATH（可选但推荐）
 
@@ -32,7 +37,7 @@ chmod +x spark-submit spark-sql
 #### 方法一：移动到系统目录（推荐）
 
 ```bash
-# 将工具移动到 /usr/local/bin（需要管理员权限）
+# 将生成的可执行文件移动到 /usr/local/bin（需要管理员权限）
 sudo mv spark-submit spark-sql /usr/local/bin/
 
 # 验证
@@ -60,7 +65,7 @@ which spark-submit spark-sql
 # 1. 创建本地 bin 目录（如果不存在）
 mkdir -p ~/bin
 
-# 2. 将工具移动到 ~/bin
+# 2. 将生成的可执行文件移动到 ~/bin
 mv spark-submit spark-sql ~/bin/
 
 # 3. 添加到 PATH（根据您的 shell 选择）
@@ -90,6 +95,7 @@ which spark-submit spark-sql
 spark-sql --kyuubi-url http://your-kyuubi-server:10099 \
           --kyuubi-user your-username \
           --kyuubi-password your-password \
+          --history-url http://your-history-server:18080 \
           -e "SHOW DATABASES"
 ```
 
@@ -112,9 +118,9 @@ EOF
 
 配置的优先级（从高到低）：
 
-1. **命令行参数**：`--kyuubi-url`、`--kyuubi-user`、`--kyuubi-password`
-2. **系统属性**：`-Dkyuubi.server.url=...`
-3. **环境变量**：`KYUUBI_SERVER_URL`、`KYUUBI_SERVER_USERNAME`、`KYUUBI_SERVER_PASSWORD`
+1. **命令行参数**：`--kyuubi-url`、`--kyuubi-user`、`--kyuubi-password`、`--history-url`
+2. **系统属性**：`-Dkyuubi.server.url=...`、`-Dspark.history.server.url=...`
+3. **环境变量**：`KYUUBI_SERVER_URL`、`KYUUBI_SERVER_USERNAME`、`KYUUBI_SERVER_PASSWORD`、`SPARK_HISTORY_SERVER_URL`
 4. **配置文件**：`~/.spark-submit.conf`
 
 **验证配置**
@@ -176,6 +182,10 @@ spark-submit \
 | `--archives` | 归档资源（支持 #name） | `--archives oss://bucket/env.tar.gz#env` |
 | `--status` | 查询 Batch 状态 | `--status jr-xxxx` |
 | `--kill` | 终止 Batch | `--kill jr-xxxx` |
+| `--kyuubi-url` | Kyuubi Server 地址 | `--kyuubi-url http://kyuubi:10099` |
+| `--kyuubi-user` | Kyuubi 用户名 | `--kyuubi-user admin` |
+| `--kyuubi-password` | Kyuubi 密码 | `--kyuubi-password secret` |
+| `--history-url` | Spark History Server 地址 | `--history-url http://history:18080` |
 
 ### 资源路径
 

@@ -52,9 +52,13 @@ public class Config {
             this.password = args.getKyuubiPassword();
             System.err.println("Info: Kyuubi password overridden by --kyuubi-password");
         }
+        if (args.getSparkHistoryUrl() != null) {
+            this.sparkHistoryServerUrl = args.getSparkHistoryUrl();
+            System.err.println("Info: Spark History URL overridden by --history-url: " + this.sparkHistoryServerUrl);
+        }
         
         // If any command-line override is provided, we're no longer using default config
-        if (args.getKyuubiUrl() != null || args.getKyuubiUser() != null || args.getKyuubiPassword() != null) {
+        if (args.getKyuubiUrl() != null || args.getKyuubiUser() != null || args.getKyuubiPassword() != null || args.getSparkHistoryUrl() != null) {
             this.usingDefaultConfig = false;
         }
     }

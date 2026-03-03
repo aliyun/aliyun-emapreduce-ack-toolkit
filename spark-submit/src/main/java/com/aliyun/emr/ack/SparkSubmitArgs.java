@@ -35,6 +35,7 @@ public class SparkSubmitArgs {
     private String kyuubiUrl;      // --kyuubi-url: Kyuubi server URL
     private String kyuubiUser;     // --kyuubi-user: Kyuubi username
     private String kyuubiPassword; // --kyuubi-password: Kyuubi password
+    private String sparkHistoryUrl; // --history-url: Spark History Server URL
     private String configFile;     // --config-file: custom config file path
     
     public String getName() {
@@ -234,6 +235,14 @@ public class SparkSubmitArgs {
 
     public void setKyuubiPassword(String kyuubiPassword) {
         this.kyuubiPassword = kyuubiPassword;
+    }
+
+    public String getSparkHistoryUrl() {
+        return sparkHistoryUrl;
+    }
+
+    public void setSparkHistoryUrl(String sparkHistoryUrl) {
+        this.sparkHistoryUrl = sparkHistoryUrl;
     }
 
     public String getConfigFile() {

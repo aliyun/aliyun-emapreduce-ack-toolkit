@@ -197,6 +197,10 @@ public class SparkSubmitParser {
                 if (i + 1 < args.length) {
                     result.setKyuubiPassword(args[++i]);
                 }
+            } else if ("--history-url".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setSparkHistoryUrl(args[++i]);
+                }
             } else if ("--config-file".equals(arg)) {
                 if (i + 1 < args.length) {
                     result.setConfigFile(args[++i]);
