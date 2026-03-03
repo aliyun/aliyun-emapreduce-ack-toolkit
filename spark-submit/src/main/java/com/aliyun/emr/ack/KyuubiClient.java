@@ -10,12 +10,15 @@ import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -26,9 +29,19 @@ public class KyuubiClient {
     private final CloseableHttpClient httpClient;
     private final Gson gson;
     
+    private static final int CONNECT_TIMEOUT_MS = 30 * 1000; // 30 seconds
+    private static final int SOCKET_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
     public KyuubiClient(Config config) {
         this.config = config;
-        this.httpClient = HttpClients.createDefault();
+        RequestConfig requestConfig = RequestConfig.custom()
+            .setConnectTimeout(CONNECT_TIMEOUT_MS)
+            .setSocketTimeout(SOCKET_TIMEOUT_MS)
+            .setConnectionRequestTimeout(CONNECT_TIMEOUT_MS)
+            .build();
+        this.httpClient = HttpClients.custom()
+            .setDefaultRequestConfig(requestConfig)
+            .build();
         this.gson = new Gson();
     }
     
@@ -190,6 +203,212 @@ public class KyuubiClient {
         }
     }
     
+    // =============================================
+    // Session & Operation API (for spark-sql mode)
+    // =============================================
+
+    /**
+     * Create a new session
+     */
+    public SessionResponse createSession(Map<String, String> configs) throws IOException {
+        String url = config.getBaseUrl() + "/sessions";
+
+        JsonObject requestBody = new JsonObject();
+        if (configs != null && !configs.isEmpty()) {
+            JsonObject confObj = new JsonObject();
+            for (Map.Entry<String, String> entry : configs.entrySet()) {
+                confObj.addProperty(entry.getKey(), entry.getValue());
+            }
+            requestBody.add("configs", confObj);
+        }
+
+        HttpPost post = new HttpPost(url);
+        post.setHeader(HttpHeaders.CONTENT_TYPE, "application/json");
+        post.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+        post.setEntity(new StringEntity(gson.toJson(requestBody), StandardCharsets.UTF_8));
+
+        try (CloseableHttpResponse response = httpClient.execute(post)) {
+            HttpEntity entity = response.getEntity();
+            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+
+            if (response.getStatusLine().getStatusCode() >= 200 &&
+                response.getStatusLine().getStatusCode() < 300) {
+                return gson.fromJson(responseBody, SessionResponse.class);
+            } else {
+                throw new IOException("Failed to create session: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Close a session
+     */
+    public void closeSession(String sessionHandle) throws IOException {
+        String url = config.getBaseUrl() + "/sessions/" + sessionHandle;
+
+        HttpDelete delete = new HttpDelete(url);
+        delete.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+
+        try (CloseableHttpResponse response = httpClient.execute(delete)) {
+            if (response.getStatusLine().getStatusCode() < 200 ||
+                response.getStatusLine().getStatusCode() >= 300) {
+                HttpEntity entity = response.getEntity();
+                String responseBody = entity != null ? EntityUtils.toString(entity, StandardCharsets.UTF_8) : "";
+                throw new IOException("Failed to close session: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Execute a SQL statement in a session
+     */
+    public OperationResponse executeStatement(String sessionHandle, String statement, boolean runAsync) throws IOException {
+        String url = config.getBaseUrl() + "/sessions/" + sessionHandle + "/operations/statement";
+
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("statement", statement);
+        requestBody.addProperty("runAsync", runAsync);
+
+        HttpPost post = new HttpPost(url);
+        post.setHeader(HttpHeaders.CONTENT_TYPE, "application/json");
+        post.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+        post.setEntity(new StringEntity(gson.toJson(requestBody), StandardCharsets.UTF_8));
+
+        try (CloseableHttpResponse response = httpClient.execute(post)) {
+            HttpEntity entity = response.getEntity();
+            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+
+            if (response.getStatusLine().getStatusCode() >= 200 &&
+                response.getStatusLine().getStatusCode() < 300) {
+                return gson.fromJson(responseBody, OperationResponse.class);
+            } else {
+                throw new IOException("Failed to execute statement: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Get operation event (status)
+     */
+    public OperationEvent getOperationEvent(String operationHandle) throws IOException {
+        String url = config.getBaseUrl() + "/operations/" + operationHandle + "/event";
+
+        HttpGet get = new HttpGet(url);
+        get.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+
+        try (CloseableHttpResponse response = httpClient.execute(get)) {
+            HttpEntity entity = response.getEntity();
+            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+
+            if (response.getStatusLine().getStatusCode() >= 200 &&
+                response.getStatusLine().getStatusCode() < 300) {
+                return gson.fromJson(responseBody, OperationEvent.class);
+            } else {
+                throw new IOException("Failed to get operation event: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Get operation result set metadata (column descriptions)
+     */
+    public ResultSetMetadata getResultSetMetadata(String operationHandle) throws IOException {
+        String url = config.getBaseUrl() + "/operations/" + operationHandle + "/resultsetmetadata";
+
+        HttpGet get = new HttpGet(url);
+        get.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+
+        try (CloseableHttpResponse response = httpClient.execute(get)) {
+            HttpEntity entity = response.getEntity();
+            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+
+            if (response.getStatusLine().getStatusCode() >= 200 &&
+                response.getStatusLine().getStatusCode() < 300) {
+                return gson.fromJson(responseBody, ResultSetMetadata.class);
+            } else {
+                throw new IOException("Failed to get result set metadata: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Get operation result row set
+     */
+    public RowSetResponse getOperationRowSet(String operationHandle, int maxRows, String fetchOrientation) throws IOException {
+        String url = config.getBaseUrl() + "/operations/" + operationHandle +
+            "/rowset?maxrows=" + maxRows + "&fetchorientation=" + fetchOrientation;
+
+        HttpGet get = new HttpGet(url);
+        get.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+
+        try (CloseableHttpResponse response = httpClient.execute(get)) {
+            HttpEntity entity = response.getEntity();
+            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+
+            if (response.getStatusLine().getStatusCode() >= 200 &&
+                response.getStatusLine().getStatusCode() < 300) {
+                return gson.fromJson(responseBody, RowSetResponse.class);
+            } else {
+                throw new IOException("Failed to get operation row set: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Get operation log lines
+     */
+    public LogResponse getOperationLog(String operationHandle, int maxRows) throws IOException {
+        String url = config.getBaseUrl() + "/operations/" + operationHandle + "/log?maxrows=" + maxRows;
+
+        HttpGet get = new HttpGet(url);
+        get.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+
+        try (CloseableHttpResponse response = httpClient.execute(get)) {
+            HttpEntity entity = response.getEntity();
+            String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
+
+            if (response.getStatusLine().getStatusCode() >= 200 &&
+                response.getStatusLine().getStatusCode() < 300) {
+                return gson.fromJson(responseBody, LogResponse.class);
+            } else {
+                throw new IOException("Failed to get operation log: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
+    /**
+     * Cancel or close an operation
+     * @param action "cancel" or "close"
+     */
+    public void updateOperation(String operationHandle, String action) throws IOException {
+        String url = config.getBaseUrl() + "/operations/" + operationHandle;
+
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("action", action);
+
+        org.apache.http.client.methods.HttpPut put = new org.apache.http.client.methods.HttpPut(url);
+        put.setHeader(HttpHeaders.CONTENT_TYPE, "application/json");
+        put.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+        put.setEntity(new StringEntity(gson.toJson(requestBody), StandardCharsets.UTF_8));
+
+        try (CloseableHttpResponse response = httpClient.execute(put)) {
+            if (response.getStatusLine().getStatusCode() < 200 ||
+                response.getStatusLine().getStatusCode() >= 300) {
+                HttpEntity entity = response.getEntity();
+                String responseBody = entity != null ? EntityUtils.toString(entity, StandardCharsets.UTF_8) : "";
+                throw new IOException("Failed to " + action + " operation: " + response.getStatusLine() +
+                    ", response: " + responseBody);
+            }
+        }
+    }
+
     public void close() throws IOException {
         httpClient.close();
     }
@@ -256,6 +475,132 @@ public class KyuubiClient {
         public void setLogRowSet(java.util.List<String> logRowSet) { this.logRowSet = logRowSet; }
         public Integer getRowCount() { return rowCount; }
         public void setRowCount(Integer rowCount) { this.rowCount = rowCount; }
+    }
+
+    /**
+     * Session response model
+     */
+    public static class SessionResponse {
+        private String identifier;
+        private String kyuubiInstance;
+
+        public String getIdentifier() { return identifier; }
+        public void setIdentifier(String identifier) { this.identifier = identifier; }
+        public String getKyuubiInstance() { return kyuubiInstance; }
+        public void setKyuubiInstance(String kyuubiInstance) { this.kyuubiInstance = kyuubiInstance; }
+    }
+
+    /**
+     * Operation response model (for executeStatement)
+     */
+    public static class OperationResponse {
+        private String identifier;
+
+        public String getIdentifier() { return identifier; }
+        public void setIdentifier(String identifier) { this.identifier = identifier; }
+    }
+
+    /**
+     * Operation event model
+     */
+    public static class OperationEvent {
+        private String statementId;
+        private String remoteId;
+        private String statement;
+        private Boolean shouldRunAsync;
+        private String state;
+        private Long eventTime;
+        private Long createTime;
+        private Long startTime;
+        private Long completeTime;
+        private String exception;
+        private String sessionId;
+        private String sessionUser;
+
+        public String getStatementId() { return statementId; }
+        public String getRemoteId() { return remoteId; }
+        public String getStatement() { return statement; }
+        public Boolean getShouldRunAsync() { return shouldRunAsync; }
+        public String getState() { return state; }
+        public Long getEventTime() { return eventTime; }
+        public Long getCreateTime() { return createTime; }
+        public Long getStartTime() { return startTime; }
+        public Long getCompleteTime() { return completeTime; }
+        public String getException() { return exception; }
+        public String getSessionId() { return sessionId; }
+        public String getSessionUser() { return sessionUser; }
+
+        public boolean isTerminal() {
+            if (state == null) return false;
+            // Kyuubi may return states with or without _STATE suffix
+            String s = state.replace("_STATE", "");
+            return "FINISHED".equals(s) || "ERROR".equals(s) ||
+                   "CANCELED".equals(s) || "CLOSED".equals(s) ||
+                   "TIMEOUT".equals(s);
+        }
+    }
+
+    /**
+     * Result set metadata model
+     */
+    public static class ResultSetMetadata {
+        private List<ColumnDesc> columns;
+
+        public List<ColumnDesc> getColumns() { return columns; }
+        public void setColumns(List<ColumnDesc> columns) { this.columns = columns; }
+    }
+
+    /**
+     * Column description model
+     */
+    public static class ColumnDesc {
+        private String columnName;
+        private String dataType;
+        private Integer columnIndex;
+        private Integer precision;
+        private Integer scale;
+        private String comment;
+
+        public String getColumnName() { return columnName; }
+        public String getDataType() { return dataType; }
+        public Integer getColumnIndex() { return columnIndex; }
+        public Integer getPrecision() { return precision; }
+        public Integer getScale() { return scale; }
+        public String getComment() { return comment; }
+    }
+
+    /**
+     * Row set response model
+     */
+    public static class RowSetResponse {
+        private List<Row> rows;
+        private Integer rowCount;
+
+        public List<Row> getRows() { return rows; }
+        public void setRows(List<Row> rows) { this.rows = rows; }
+        public Integer getRowCount() { return rowCount; }
+        public void setRowCount(Integer rowCount) { this.rowCount = rowCount; }
+    }
+
+    /**
+     * Row model
+     */
+    public static class Row {
+        private List<Field> fields;
+
+        public List<Field> getFields() { return fields; }
+        public void setFields(List<Field> fields) { this.fields = fields; }
+    }
+
+    /**
+     * Field model
+     */
+    public static class Field {
+        private String dataType;
+        private Object value;
+
+        public String getDataType() { return dataType; }
+        public Object getValue() { return value; }
     }
 }
 

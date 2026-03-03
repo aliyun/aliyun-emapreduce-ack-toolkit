@@ -1,6 +1,16 @@
 package com.aliyun.emr.ack;
 
 import java.io.IOException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.io.BufferedReader;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Main entry point for spark-submit command
@@ -8,6 +18,8 @@ import java.io.IOException;
 public class SparkSubmit {
     private static final int POLL_INTERVAL_MS = 2000; // 2 seconds
     private static final int LOG_FETCH_SIZE = 100;
+    private static final long HEARTBEAT_TIMEOUT_MS = 30 * 60 * 1000L; // 30 minutes no-activity timeout
+    private static final long HEARTBEAT_LOG_INTERVAL_MS = 60 * 1000L; // 1 minute between heartbeat log messages
     
     /**
      * Build Spark History Server URL from application ID
@@ -67,7 +79,15 @@ public class SparkSubmit {
             }
             
             // Load configuration
-            Config config = new Config();
+            Config config;
+            if (submitArgs.getConfigFile() != null) {
+                config = new Config(submitArgs.getConfigFile());
+            } else {
+                config = new Config();
+            }
+            
+            // Apply command-line overrides (highest priority)
+            config.applyOverrides(submitArgs);
             
             // Validate and warn if using default config
             config.validateAndPrintWarning();
@@ -100,6 +120,17 @@ public class SparkSubmit {
                 System.out.println("Kill request sent for Batch ID: " + submitArgs.getKillBatchId());
                 client.close();
                 System.exit(0);
+            }
+            
+            // Handle SQL mode (-f or -e)
+            if (submitArgs.isSqlMode()) {
+                // Validate mutually exclusive SQL options
+                if (submitArgs.getSqlFile() != null && submitArgs.getSqlStatement() != null) {
+                    System.err.println("Error: -f and -e cannot be used together");
+                    System.exit(1);
+                }
+                executeSqlMode(submitArgs, config, client);
+                return;
             }
             
             // Validate required arguments for submission
@@ -209,6 +240,9 @@ public class SparkSubmit {
             }
             System.out.println();
             System.out.println("Waiting for job to complete...");
+            if (submitArgs.getTimeoutSeconds() != null) {
+                System.out.println("Timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
+            }
             System.out.println("------------------------------------------");
             
             // Poll for status and logs
@@ -217,10 +251,30 @@ public class SparkSubmit {
             String lastState = response.getState();
             int consecutiveErrors = 0;
             final int MAX_CONSECUTIVE_ERRORS = 5;
+            long startTimeMillis = System.currentTimeMillis();
+            Long timeoutMillis = submitArgs.getTimeoutSeconds() != null ? 
+                    submitArgs.getTimeoutSeconds() * 1000L : null;
             
             while (true) {
                 try {
                     Thread.sleep(POLL_INTERVAL_MS);
+                    
+                    // Check for timeout
+                    if (timeoutMillis != null) {
+                        long elapsedMillis = System.currentTimeMillis() - startTimeMillis;
+                        if (elapsedMillis >= timeoutMillis) {
+                            System.err.println("\n⚠️  Job timeout after " + submitArgs.getTimeoutSeconds() + " seconds.");
+                            System.err.println("Attempting to kill the job...");
+                            try {
+                                client.killBatch(batchId);
+                                System.err.println("Kill request sent for Batch ID: " + batchId);
+                            } catch (IOException killError) {
+                                System.err.println("Warning: Failed to kill job: " + killError.getMessage());
+                            }
+                            client.close();
+                            System.exit(124); // Exit code 124 is commonly used for timeout (same as GNU timeout)
+                        }
+                    }
                     
                     // Get batch status
                     KyuubiClient.BatchResponse status = client.getBatch(batchId);
@@ -354,10 +408,532 @@ public class SparkSubmit {
         }
     }
     
+    /**
+     * Execute SQL mode: create session, execute SQL statements, print results, close session.
+     * Features:
+     * - Continuous operation log output during statement execution
+     * - Heartbeat timeout: kills job if no activity for 30 minutes
+     * - Overall timeout: kills job if --timeout is exceeded
+     * - Exit codes: 0 (success), 1 (error), 124 (timeout), 130 (interrupted)
+     */
+    private static void executeSqlMode(SparkSubmitArgs submitArgs, Config config, KyuubiClient client) {
+        String sessionHandle = null;
+        int exitCode = 1;
+        try {
+            // Read SQL content
+            String sqlContent;
+            if (submitArgs.getSqlFile() != null) {
+                sqlContent = readSqlFile(submitArgs.getSqlFile());
+                System.out.println("[" + timestamp() + "] Reading SQL from file: " + submitArgs.getSqlFile());
+            } else {
+                sqlContent = submitArgs.getSqlStatement();
+            }
+
+            if (sqlContent == null || sqlContent.trim().isEmpty()) {
+                System.err.println("Error: SQL content is empty");
+                client.close();
+                System.exit(1);
+            }
+
+            // Parse SQL statements (split by semicolon, ignoring empty ones)
+            List<String> statements = parseSqlStatements(sqlContent);
+            if (statements.isEmpty()) {
+                System.err.println("Error: No valid SQL statements found");
+                client.close();
+                System.exit(1);
+            }
+
+            System.out.println("==========================================");
+            System.out.println("Executing Spark SQL via Kyuubi Server");
+            System.out.println("==========================================");
+            System.out.println("Kyuubi Server URL: " + config.getServerUrl());
+            System.out.println("Username: " + config.getUsername());
+            System.out.println("SQL statements to execute: " + statements.size());
+            System.out.println("Heartbeat timeout: 30 minutes");
+            if (submitArgs.getTimeoutSeconds() != null) {
+                System.out.println("Overall timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
+            }
+            if (!submitArgs.getConf().isEmpty()) {
+                System.out.println("Configuration:");
+                for (Map.Entry<String, String> entry : submitArgs.getConf().entrySet()) {
+                    System.out.println("  " + entry.getKey() + " = " + entry.getValue());
+                }
+            }
+            System.out.println("------------------------------------------");
+            System.out.println();
+
+            // Create session
+            System.out.println("[" + timestamp() + "] Creating Kyuubi session...");
+            KyuubiClient.SessionResponse session = client.createSession(submitArgs.getConf());
+            sessionHandle = session.getIdentifier();
+            System.out.println("[" + timestamp() + "] Session created: " + sessionHandle);
+            System.out.println();
+
+            // Track overall timeout
+            long overallStartTimeMillis = System.currentTimeMillis();
+            Long overallTimeoutMillis = submitArgs.getTimeoutSeconds() != null ?
+                submitArgs.getTimeoutSeconds() * 1000L : null;
+
+            // Execute each statement
+            exitCode = 0;
+            for (int idx = 0; idx < statements.size(); idx++) {
+                String sql = statements.get(idx);
+                System.out.println("------------------------------------------");
+                System.out.println("[" + timestamp() + "] [" + (idx + 1) + "/" + statements.size() + "] Executing: " + truncateSql(sql, 200));
+                System.out.println("------------------------------------------");
+
+                try {
+                    executeSingleStatement(client, sessionHandle, sql, overallTimeoutMillis, overallStartTimeMillis);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("\n[" + timestamp() + "] Interrupted.");
+                    exitCode = 130;
+                    break;
+                } catch (Exception e) {
+                    System.err.println("\n[" + timestamp() + "] Error executing statement: " + e.getMessage());
+                    if (e.getMessage() != null &&
+                        (e.getMessage().contains("Heartbeat timeout") || e.getMessage().contains("Overall timeout"))) {
+                        exitCode = 124;
+                    } else {
+                        exitCode = 1;
+                    }
+                    break;
+                }
+                System.out.println();
+            }
+
+            // Close session
+            System.out.println("------------------------------------------");
+            System.out.println("[" + timestamp() + "] Closing session: " + sessionHandle);
+            client.closeSession(sessionHandle);
+            sessionHandle = null;
+            System.out.println("[" + timestamp() + "] Session closed.");
+
+            if (exitCode == 0) {
+                System.out.println("\n[" + timestamp() + "] All SQL statements completed successfully.");
+            }
+
+            client.close();
+            System.exit(exitCode);
+
+        } catch (Exception e) {
+            System.err.println("\n[" + timestamp() + "] Error: " + e.getMessage());
+            if (e.getCause() != null) {
+                System.err.println("   Cause: " + e.getCause().getMessage());
+            }
+            e.printStackTrace();
+            // Try to close session on error
+            if (sessionHandle != null) {
+                try {
+                    System.err.println("[" + timestamp() + "] Closing session due to error...");
+                    client.closeSession(sessionHandle);
+                } catch (IOException ex) {
+                    // Ignore
+                }
+            }
+            try {
+                client.close();
+            } catch (IOException ex) {
+                // Ignore
+            }
+            System.exit(exitCode);
+        }
+    }
+
+    /**
+     * Execute a single SQL statement: submit, poll for completion with log output and heartbeat, fetch and print results.
+     * - Continuously fetches and prints operation logs
+     * - Tracks heartbeat: resets on new logs or state changes
+     * - Kills operation if no activity for 30 minutes (heartbeat timeout)
+     * - Kills operation if overall timeout is exceeded
+     */
+    private static void executeSingleStatement(KyuubiClient client, String sessionHandle, String sql,
+            Long overallTimeoutMillis, long overallStartTimeMillis) throws IOException, InterruptedException {
+        // Execute statement asynchronously
+        KyuubiClient.OperationResponse opResponse = client.executeStatement(sessionHandle, sql, true);
+        String operationHandle = opResponse.getIdentifier();
+        System.out.println("[" + timestamp() + "] Operation submitted: " + operationHandle);
+
+        // Poll for operation completion with heartbeat tracking
+        String lastState = null;
+        long lastActivityTime = System.currentTimeMillis();
+        long lastHeartbeatLogTime = System.currentTimeMillis();
+        int consecutiveErrors = 0;
+        final int MAX_CONSECUTIVE_ERRORS = 5;
+
+        while (true) {
+            Thread.sleep(POLL_INTERVAL_MS);
+
+            // Check overall timeout
+            if (overallTimeoutMillis != null) {
+                long elapsed = System.currentTimeMillis() - overallStartTimeMillis;
+                if (elapsed >= overallTimeoutMillis) {
+                    System.err.println("\n[" + timestamp() + "] Overall timeout after " +
+                        (overallTimeoutMillis / 1000) + " seconds. Canceling operation...");
+                    try {
+                        client.updateOperation(operationHandle, "cancel");
+                    } catch (IOException e) {
+                        // Ignore
+                    }
+                    throw new IOException("Overall timeout after " + (overallTimeoutMillis / 1000) + " seconds");
+                }
+            }
+
+            // Fetch and print operation logs (non-fatal errors)
+            boolean hasNewLogs = false;
+            try {
+                KyuubiClient.LogResponse logResponse = client.getOperationLog(operationHandle, LOG_FETCH_SIZE);
+                if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
+                    for (String line : logResponse.getLogRowSet()) {
+                        System.out.println(line);
+                    }
+                    hasNewLogs = true;
+                    lastActivityTime = System.currentTimeMillis();
+
+                    // Continue fetching if we got a full page (might have more logs)
+                    while (logResponse.getLogRowSet() != null &&
+                           logResponse.getLogRowSet().size() == LOG_FETCH_SIZE) {
+                        logResponse = client.getOperationLog(operationHandle, LOG_FETCH_SIZE);
+                        if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
+                            for (String line : logResponse.getLogRowSet()) {
+                                System.out.println(line);
+                            }
+                            lastActivityTime = System.currentTimeMillis();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            } catch (IOException e) {
+                // Non-fatal, continue polling
+            }
+
+            // Check operation status
+            KyuubiClient.OperationEvent event;
+            try {
+                event = client.getOperationEvent(operationHandle);
+                consecutiveErrors = 0;
+            } catch (IOException e) {
+                consecutiveErrors++;
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    throw new IOException("Too many consecutive errors fetching operation status: " + e.getMessage());
+                }
+                if (consecutiveErrors == 1) {
+                    System.err.println("[" + timestamp() + "] Warning: Error fetching operation status: " +
+                        e.getMessage() + " (retrying...)");
+                }
+                continue;
+            }
+
+            String currentState = event.getState();
+            if (!currentState.equals(lastState)) {
+                if (lastState != null) {
+                    System.out.println("[" + timestamp() + "] [Status] " + lastState + " -> " + currentState);
+                } else {
+                    System.out.println("[" + timestamp() + "] [Status] " + currentState);
+                }
+                lastState = currentState;
+                lastActivityTime = System.currentTimeMillis();
+            }
+
+            if (event.isTerminal()) {
+                // Fetch any remaining logs before reporting result
+                try {
+                    KyuubiClient.LogResponse finalLogs = client.getOperationLog(operationHandle, LOG_FETCH_SIZE);
+                    while (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
+                        for (String line : finalLogs.getLogRowSet()) {
+                            System.out.println(line);
+                        }
+                        finalLogs = client.getOperationLog(operationHandle, LOG_FETCH_SIZE);
+                    }
+                } catch (IOException e) {
+                    // Ignore
+                }
+
+                if ("ERROR".equals(currentState) || "CANCELED".equals(currentState) || "TIMEOUT".equals(currentState) ||
+                    "ERROR_STATE".equals(currentState) || "CANCELED_STATE".equals(currentState) || "TIMEOUT_STATE".equals(currentState)) {
+                    String errorMsg = "Statement " + currentState;
+                    if (event.getException() != null && !event.getException().isEmpty()) {
+                        errorMsg += ": " + event.getException();
+                    }
+                    throw new IOException(errorMsg);
+                }
+                break;
+            }
+
+            // Check heartbeat timeout (30 minutes no activity)
+            long idleTimeMs = System.currentTimeMillis() - lastActivityTime;
+            if (idleTimeMs >= HEARTBEAT_TIMEOUT_MS) {
+                System.err.println("\n[" + timestamp() + "] Heartbeat timeout: no activity for 30 minutes. Canceling operation...");
+                try {
+                    client.updateOperation(operationHandle, "cancel");
+                } catch (IOException e) {
+                    // Ignore
+                }
+                throw new IOException("Heartbeat timeout: no activity for 30 minutes");
+            }
+
+            // Print periodic heartbeat message (every 1 minute when idle)
+            long timeSinceLastHeartbeatLog = System.currentTimeMillis() - lastHeartbeatLogTime;
+            if (timeSinceLastHeartbeatLog >= HEARTBEAT_LOG_INTERVAL_MS) {
+                if (!hasNewLogs) {
+                    long idleMinutes = idleTimeMs / 60000;
+                    System.out.println("[" + timestamp() + "] [Heartbeat] Still running... (state: " + currentState +
+                        ", idle: " + idleMinutes + "m, timeout: 30m)");
+                }
+                lastHeartbeatLogTime = System.currentTimeMillis();
+            }
+        }
+
+        // Fetch and print result set
+        fetchAndPrintResults(client, operationHandle);
+
+        // Close the operation
+        try {
+            client.updateOperation(operationHandle, "close");
+        } catch (IOException e) {
+            // Ignore close errors
+        }
+    }
+
+    /**
+     * Fetch result set metadata and rows, then print as a formatted table
+     */
+    private static void fetchAndPrintResults(KyuubiClient client, String operationHandle) throws IOException {
+        // Get column metadata
+        KyuubiClient.ResultSetMetadata metadata = client.getResultSetMetadata(operationHandle);
+        List<KyuubiClient.ColumnDesc> columns = metadata.getColumns();
+
+        if (columns == null || columns.isEmpty()) {
+            System.out.println("(No result columns)");
+            return;
+        }
+
+        // Fetch all rows
+        List<List<String>> allRows = new ArrayList<>();
+        int fetchSize = 1000;
+        while (true) {
+            KyuubiClient.RowSetResponse rowSet = client.getOperationRowSet(operationHandle, fetchSize, "FETCH_NEXT");
+            if (rowSet.getRows() == null || rowSet.getRows().isEmpty()) {
+                break;
+            }
+            for (KyuubiClient.Row row : rowSet.getRows()) {
+                List<String> rowValues = new ArrayList<>();
+                if (row.getFields() != null) {
+                    for (KyuubiClient.Field field : row.getFields()) {
+                        rowValues.add(field.getValue() != null ? String.valueOf(field.getValue()) : "NULL");
+                    }
+                }
+                allRows.add(rowValues);
+            }
+            // If we got fewer rows than requested, no more data
+            if (rowSet.getRows().size() < fetchSize) {
+                break;
+            }
+        }
+
+        // Print formatted table
+        printResultTable(columns, allRows);
+    }
+
+    /**
+     * Print results as a formatted table (similar to spark-sql output)
+     */
+    private static void printResultTable(List<KyuubiClient.ColumnDesc> columns, List<List<String>> rows) {
+        int numCols = columns.size();
+
+        // Calculate column widths
+        int[] widths = new int[numCols];
+        for (int i = 0; i < numCols; i++) {
+            widths[i] = columns.get(i).getColumnName().length();
+        }
+        for (List<String> row : rows) {
+            for (int i = 0; i < numCols && i < row.size(); i++) {
+                widths[i] = Math.max(widths[i], row.get(i).length());
+            }
+        }
+
+        // Build separator line
+        StringBuilder separator = new StringBuilder("+");
+        for (int w : widths) {
+            for (int j = 0; j < w + 2; j++) {
+                separator.append("-");
+            }
+            separator.append("+");
+        }
+        String sep = separator.toString();
+
+        // Print header
+        System.out.println(sep);
+        StringBuilder header = new StringBuilder("|");
+        for (int i = 0; i < numCols; i++) {
+            header.append(" ").append(padRight(columns.get(i).getColumnName(), widths[i])).append(" |");
+        }
+        System.out.println(header.toString());
+        System.out.println(sep);
+
+        // Print rows
+        for (List<String> row : rows) {
+            StringBuilder rowLine = new StringBuilder("|");
+            for (int i = 0; i < numCols; i++) {
+                String value = i < row.size() ? row.get(i) : "";
+                rowLine.append(" ").append(padRight(value, widths[i])).append(" |");
+            }
+            System.out.println(rowLine.toString());
+        }
+        System.out.println(sep);
+
+        // Print row count
+        System.out.println(rows.size() + " row(s) in set");
+    }
+
+    /**
+     * Read SQL content from a file
+     */
+    private static String readSqlFile(String filePath) throws IOException {
+        File file = new File(filePath);
+        if (!file.exists()) {
+            throw new IOException("SQL file not found: " + filePath);
+        }
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Parse SQL content into individual statements (split by semicolon)
+     * Handles comments (-- and /* ... * /) and skips empty statements
+     */
+    private static List<String> parseSqlStatements(String sqlContent) {
+        List<String> statements = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inSingleLineComment = false;
+        boolean inMultiLineComment = false;
+        boolean inSingleQuote = false;
+        boolean inDoubleQuote = false;
+
+        for (int i = 0; i < sqlContent.length(); i++) {
+            char c = sqlContent.charAt(i);
+            char next = (i + 1 < sqlContent.length()) ? sqlContent.charAt(i + 1) : 0;
+
+            if (inSingleLineComment) {
+                if (c == '\n') {
+                    inSingleLineComment = false;
+                    current.append(c);
+                }
+                continue;
+            }
+
+            if (inMultiLineComment) {
+                if (c == '*' && next == '/') {
+                    inMultiLineComment = false;
+                    i++; // skip '/'
+                }
+                continue;
+            }
+
+            if (inSingleQuote) {
+                current.append(c);
+                if (c == '\'' && (i == 0 || sqlContent.charAt(i - 1) != '\\')) {
+                    inSingleQuote = false;
+                }
+                continue;
+            }
+
+            if (inDoubleQuote) {
+                current.append(c);
+                if (c == '"' && (i == 0 || sqlContent.charAt(i - 1) != '\\')) {
+                    inDoubleQuote = false;
+                }
+                continue;
+            }
+
+            // Check for comments
+            if (c == '-' && next == '-') {
+                inSingleLineComment = true;
+                i++; // skip second '-'
+                continue;
+            }
+            if (c == '/' && next == '*') {
+                inMultiLineComment = true;
+                i++; // skip '*'
+                continue;
+            }
+
+            // Check for quotes
+            if (c == '\'') {
+                inSingleQuote = true;
+                current.append(c);
+                continue;
+            }
+            if (c == '"') {
+                inDoubleQuote = true;
+                current.append(c);
+                continue;
+            }
+
+            // Check for statement separator
+            if (c == ';') {
+                String stmt = current.toString().trim();
+                if (!stmt.isEmpty()) {
+                    statements.add(stmt);
+                }
+                current.setLength(0);
+                continue;
+            }
+
+            current.append(c);
+        }
+
+        // Add last statement if not empty (without trailing semicolon)
+        String last = current.toString().trim();
+        if (!last.isEmpty()) {
+            statements.add(last);
+        }
+
+        return statements;
+    }
+
+    /**
+     * Truncate SQL for display purposes
+     */
+    private static String truncateSql(String sql, int maxLen) {
+        String oneLine = sql.replaceAll("\\s+", " ").trim();
+        if (oneLine.length() > maxLen) {
+            return oneLine.substring(0, maxLen) + "...";
+        }
+        return oneLine;
+    }
+
+    /**
+     * Pad a string to the right with spaces
+     */
+    private static String padRight(String s, int width) {
+        if (s.length() >= width) return s;
+        StringBuilder sb = new StringBuilder(s);
+        for (int i = s.length(); i < width; i++) {
+            sb.append(' ');
+        }
+        return sb.toString();
+    }
+
+    private static String timestamp() {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+    }
+
     private static void printUsage() {
         System.out.println("Spark Submit Client for Kyuubi Server");
         System.out.println("=====================================\n");
-        System.out.println("Usage: spark-submit [options] <app jar | python file> [app arguments]\n");
+        System.out.println("Usage:");
+        System.out.println("  spark-submit [options] <app jar | python file> [app arguments]");
+        System.out.println("  spark-submit -e <sql-string> [options]");
+        System.out.println("  spark-submit -f <sql-file> [options]\n");
         System.out.println("Options:");
         System.out.println("  --class <class name>          Application's main class (required for JAR)");
         System.out.println("  --name <name>                 Name of your application");
@@ -378,22 +954,43 @@ public class SparkSubmit {
         System.out.println("  --conf <key>=<value>          Spark configuration property");
         System.out.println("  --status <batchId>            Query batch status");
         System.out.println("  --kill <batchId>              Kill a batch job");
+        System.out.println("  --timeout <seconds>           Timeout for job completion in seconds.");
+        System.out.println("                                If exceeded, the job will be killed and exit");
+        System.out.println("                                with code 124");
+        System.out.println("  -e <sql-string>               Execute the given SQL statement (spark-sql mode)");
+        System.out.println("  -f <sql-file>                 Execute SQL from the given file (spark-sql mode)");
+        System.out.println("  --kyuubi-url <url>            Kyuubi server URL (overrides all other config)");
+        System.out.println("  --kyuubi-user <user>          Kyuubi username (overrides all other config)");
+        System.out.println("  --kyuubi-password <pwd>       Kyuubi password (overrides all other config)");
+        System.out.println("  --config-file <path>          Custom config file path");
         System.out.println("  --help, -h                    Show this help message\n");
+        System.out.println("Spark SQL Mode:");
+        System.out.println("  Use -e or -f to execute SQL statements via Kyuubi session (like spark-sql).");
+        System.out.println("  Multiple statements separated by ';' are supported.\n");
+        System.out.println("  Examples:");
+        System.out.println("    spark-submit -e \"SHOW DATABASES\"");
+        System.out.println("    spark-submit -e \"SELECT * FROM my_db.my_table LIMIT 10\"");
+        System.out.println("    spark-submit -f /path/to/query.sql");
+        System.out.println("    spark-submit -f /path/to/query.sql --conf spark.executor.memory=2g\n");
         System.out.println("Configuration:");
-        System.out.println("  Configure Kyuubi server connection via one of the following:\n");
-        System.out.println("  1. Configuration file (recommended):");
-        System.out.println("     Create: ~/.spark-submit.conf");
+        System.out.println("  Configure Kyuubi server connection via one of the following (priority order):\n");
+        System.out.println("  1. Command-line arguments (highest priority):");
+        System.out.println("     --kyuubi-url http://your-kyuubi-server:port");
+        System.out.println("     --kyuubi-user your-username");
+        System.out.println("     --kyuubi-password your-password\n");
+        System.out.println("  2. Configuration file:");
+        System.out.println("     Create: ~/.spark-submit.conf (or use --config-file <path>)");
         System.out.println("     Content:");
         System.out.println("       kyuubi.server.url=http://your-kyuubi-server:port");
         System.out.println("       kyuubi.server.username=your-username");
         System.out.println("       kyuubi.server.password=your-password");
         System.out.println("       spark.history.server.url=http://your-history-server:port  # Optional\n");
-        System.out.println("  2. Environment variables:");
+        System.out.println("  3. Environment variables:");
         System.out.println("     export KYUUBI_SERVER_URL=http://your-kyuubi-server:port");
         System.out.println("     export KYUUBI_SERVER_USERNAME=your-username");
         System.out.println("     export KYUUBI_SERVER_PASSWORD=your-password");
         System.out.println("     export SPARK_HISTORY_SERVER_URL=http://your-history-server:port  # Optional\n");
-        System.out.println("  3. System properties:");
+        System.out.println("  4. System properties (lowest priority):");
         System.out.println("     -Dkyuubi.server.url=http://your-kyuubi-server:port");
         System.out.println("     -Dkyuubi.server.username=your-username");
         System.out.println("     -Dkyuubi.server.password=your-password");

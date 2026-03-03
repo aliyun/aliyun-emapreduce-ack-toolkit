@@ -29,6 +29,36 @@ public class Config {
         loadConfig(configFile);
     }
     
+    /**
+     * Apply command-line overrides to configuration.
+     * Command-line values have the highest priority, overriding all other sources.
+     * Priority order (highest to lowest):
+     * 1. Command-line arguments (--kyuubi-url, --kyuubi-user, --kyuubi-password)
+     * 2. System properties (-Dkyuubi.server.url)
+     * 3. Environment variables (KYUUBI_SERVER_URL)
+     * 4. Config file (~/.spark-submit.conf)
+     * 5. Default values
+     */
+    public void applyOverrides(SparkSubmitArgs args) {
+        if (args.getKyuubiUrl() != null) {
+            this.serverUrl = args.getKyuubiUrl();
+            System.err.println("Info: Kyuubi URL overridden by --kyuubi-url: " + this.serverUrl);
+        }
+        if (args.getKyuubiUser() != null) {
+            this.username = args.getKyuubiUser();
+            System.err.println("Info: Kyuubi user overridden by --kyuubi-user: " + this.username);
+        }
+        if (args.getKyuubiPassword() != null) {
+            this.password = args.getKyuubiPassword();
+            System.err.println("Info: Kyuubi password overridden by --kyuubi-password");
+        }
+        
+        // If any command-line override is provided, we're no longer using default config
+        if (args.getKyuubiUrl() != null || args.getKyuubiUser() != null || args.getKyuubiPassword() != null) {
+            this.usingDefaultConfig = false;
+        }
+    }
+    
     private void loadConfig() {
         loadConfig(DEFAULT_CONFIG_FILE);
     }
@@ -143,19 +173,22 @@ public class Config {
             System.err.println("\n⚠️  Warning: Using default configuration!");
             System.err.println("   Kyuubi Server URL: " + serverUrl);
             System.err.println("   Username: " + username);
-            System.err.println("\n   To configure Kyuubi server, please:");
-            System.err.println("   1. Create config file: " + configFile);
-            System.err.println("   2. Add the following content:");
+            System.err.println("\n   To configure Kyuubi server, please use one of the following methods:");
+            System.err.println("\n   Method 1: Command-line arguments (highest priority)");
+            System.err.println("      --kyuubi-url <your-kyuubi-server-url>");
+            System.err.println("      --kyuubi-user <your-username>");
+            System.err.println("      --kyuubi-password <your-password>");
+            System.err.println("\n   Method 2: Create config file: " + configFile);
             System.err.println("      kyuubi.server.url=<your-kyuubi-server-url>");
             System.err.println("      kyuubi.server.username=<your-username>");
             System.err.println("      kyuubi.server.password=<your-password>");
             System.err.println("      spark.history.server.url=<your-spark-history-server-url>  # Optional");
-            System.err.println("\n   Or set environment variables:");
+            System.err.println("\n   Method 3: Set environment variables");
             System.err.println("      export KYUUBI_SERVER_URL=<your-kyuubi-server-url>");
             System.err.println("      export KYUUBI_SERVER_USERNAME=<your-username>");
             System.err.println("      export KYUUBI_SERVER_PASSWORD=<your-password>");
             System.err.println("      export SPARK_HISTORY_SERVER_URL=<your-spark-history-server-url>  # Optional");
-            System.err.println("\n   Or use system properties:");
+            System.err.println("\n   Method 4: Use system properties");
             System.err.println("      -Dkyuubi.server.url=<your-kyuubi-server-url>");
             System.err.println("      -Dkyuubi.server.username=<your-username>");
             System.err.println("      -Dkyuubi.server.password=<your-password>");

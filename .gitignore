@@ -1,2 +1,17 @@
+# IDE
 /.idea/
+*.iml
+
+# Maven
+**/target/
+dependency-reduced-pom.xml
+
+# Build artifacts (self-extracting executables)
+spark-submit/spark-submit
+spark-submit/spark-sql
+
+# OS
+.DS_Store
+
+# Project internal
 AGENTS.md

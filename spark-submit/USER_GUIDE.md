@@ -1,32 +1,44 @@
 # Spark Submit 客户端使用指南
 
-本指南面向使用 Spark Submit 客户端工具向 Kyuubi Server 提交 Spark 作业的用户。
+本指南面向使用 Spark Submit/SQL 客户端工具向 Kyuubi Server 提交 Spark 作业或执行 SQL 的用户。
+
+## 工具概述
+
+本工具集包含两个命令行工具：
+
+| 工具 | 用途 | 
+|------|------|
+| `spark-submit` | 提交 Spark 作业（JAR/PySpark）或执行 SQL |
+| `spark-sql` | 执行 Spark SQL（`spark-submit -e/-f` 的快捷方式）|
+
+两个工具使用相同的参数格式，功能完全兼容原生 Apache Spark 的命令行体验。
 
 ## 快速开始
 
 ### 第一步：下载可执行文件
 
-从项目发布页面下载 `spark-submit` 可执行文件，并赋予执行权限：
+从项目发布页面下载 `spark-submit` 和 `spark-sql` 可执行文件：
 
 ```bash
-# 下载 spark-submit 文件
+# 下载工具文件
 # 赋予执行权限
-chmod +x spark-submit
+chmod +x spark-submit spark-sql
 ```
 
 ### 第二步：添加到系统 PATH（可选但推荐）
 
-将 `spark-submit` 添加到系统 PATH 后，您可以在任何目录直接使用 `spark-submit` 命令，而不需要输入完整路径。
+将工具添加到系统 PATH 后，您可以在任何目录直接使用命令，而不需要输入完整路径。
 
 #### 方法一：移动到系统目录（推荐）
 
 ```bash
-# 将 spark-submit 移动到 /usr/local/bin（需要管理员权限）
-sudo mv spark-submit /usr/local/bin/
+# 将工具移动到 /usr/local/bin（需要管理员权限）
+sudo mv spark-submit spark-sql /usr/local/bin/
 
 # 验证
-which spark-submit
+which spark-submit spark-sql
 spark-submit --help
+spark-sql --help
 ```
 
 #### 方法二：创建符号链接
@@ -34,22 +46,22 @@ spark-submit --help
 ```bash
 # 创建符号链接到系统目录
 sudo ln -s $(pwd)/spark-submit /usr/local/bin/spark-submit
+sudo ln -s $(pwd)/spark-sql /usr/local/bin/spark-sql
 
 # 验证
-which spark-submit
-spark-submit --help
+which spark-submit spark-sql
 ```
 
 #### 方法三：添加到用户 PATH
 
-如果您没有管理员权限，可以将 `spark-submit` 所在目录添加到用户的 PATH：
+如果您没有管理员权限，可以将工具所在目录添加到用户的 PATH：
 
 ```bash
 # 1. 创建本地 bin 目录（如果不存在）
 mkdir -p ~/bin
 
-# 2. 将 spark-submit 移动到 ~/bin
-mv spark-submit ~/bin/
+# 2. 将工具移动到 ~/bin
+mv spark-submit spark-sql ~/bin/
 
 # 3. 添加到 PATH（根据您的 shell 选择）
 # 对于 bash
@@ -61,36 +73,69 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 
 # 4. 验证
-which spark-submit
-spark-submit --help
+which spark-submit spark-sql
 ```
 
-**注意**：添加到 PATH 后，您可以直接使用 `spark-submit` 命令，而不需要 `./spark-submit`。
+**注意**：添加到 PATH 后，您可以直接使用 `spark-submit` 和 `spark-sql` 命令。
 
 ### 第三步：配置 Kyuubi Server 连接信息
+
+有两种方式配置 Kyuubi 连接信息：
+
+#### 方式一：命令行参数（推荐用于临时使用）
+
+直接在命令行传入配置，无需创建配置文件：
+
+```bash
+spark-sql --kyuubi-url http://your-kyuubi-server:10099 \
+          --kyuubi-user your-username \
+          --kyuubi-password your-password \
+          -e "SHOW DATABASES"
+```
+
+#### 方式二：配置文件（推荐用于长期使用）
 
 创建配置文件 `~/.spark-submit.conf`：
 
 ```bash
-mkdir -p ~/.kyuubi
-cat > ~/.kyuubi/config.properties << EOF
-kyuubi.server.url=http://your-kyuubi-server:port
+cat > ~/.spark-submit.conf << EOF
+kyuubi.server.url=http://your-kyuubi-server:10099
 kyuubi.server.username=your-username
 kyuubi.server.password=your-password
+spark.history.server.url=http://your-history-server:18080
 EOF
 ```
 
-**请将上述配置中的值替换为您的实际 Kyuubi Server 信息。**
+配置文件创建后，后续命令无需再指定连接参数。
+
+#### 配置优先级
+
+配置的优先级（从高到低）：
+
+1. **命令行参数**：`--kyuubi-url`、`--kyuubi-user`、`--kyuubi-password`
+2. **系统属性**：`-Dkyuubi.server.url=...`
+3. **环境变量**：`KYUUBI_SERVER_URL`、`KYUUBI_SERVER_USERNAME`、`KYUUBI_SERVER_PASSWORD`
+4. **配置文件**：`~/.spark-submit.conf`
 
 **验证配置**
-运行以下命令查看帮助信息，如果配置正确，提交作业时会显示您的 Kyuubi Server 地址：
 
 ```bash
-./spark-submit --help
+spark-submit --help
 ```
-如果使用默认配置，提交作业时会显示警告信息，提示您进行配置。
 
-### 第四步：提交第一个作业（使用 OSS JAR）
+### 第四步：执行第一条 SQL
+
+```bash
+# 使用命令行参数
+spark-sql --kyuubi-url http://your-kyuubi:10099 \
+          --kyuubi-user user --kyuubi-password pwd \
+          -e "SHOW DATABASES"
+
+# 或使用配置文件后
+spark-sql -e "SHOW DATABASES"
+```
+
+### 第五步：提交第一个作业（使用 OSS JAR）
 
 ```bash
 spark-submit \
@@ -195,8 +240,90 @@ spark-submit \
 如果您需要查看完整的帮助信息，包括所有支持的选项和配置说明：
 
 ```bash
-./spark-submit --help
-# 或
-./spark-submit -h
+spark-submit --help
+spark-sql --help
 ```
 
+## Spark SQL 模式
+
+### 执行内联 SQL
+
+使用 `-e` 参数直接执行 SQL：
+
+```bash
+# 单条 SQL
+spark-sql -e "SHOW DATABASES"
+
+# 多条 SQL（分号分隔）
+spark-sql -e "USE default; SHOW TABLES; SELECT * FROM my_table LIMIT 10"
+
+# 使用 spark-submit 也可以
+spark-submit -e "SELECT 1 + 1 as result"
+```
+
+### 执行 SQL 文件
+
+使用 `-f` 参数执行 SQL 文件：
+
+```bash
+# 执行本地 SQL 文件
+spark-sql -f /path/to/queries.sql
+
+# 使用 spark-submit 也可以
+spark-submit -f /path/to/etl_job.sql
+```
+
+### SQL 模式特性
+
+- 基于 Kyuubi Session API，一个 Session 中顺序执行多条语句
+- 实时流式输出 Operation 日志（来自 Kyuubi Server 和 Spark Engine）
+- 30 分钟心跳超时：如果任务无日志/状态更新超过 30 分钟，自动终止
+- 退出码：成功 `0`，失败 `1`，超时 `124`
+- 结果集以格式化表格输出
+
+### SQL 执行成功示例
+
+```
+==========================================
+Executing Spark SQL via Kyuubi Server
+==========================================
+Kyuubi Server URL: http://47.110.75.67:10099
+Username: emr-user
+SQL statements to execute: 1
+------------------------------------------
+
+[2026-03-03 11:04:17] Creating Kyuubi session...
+[2026-03-03 11:04:17] Session created: 84f4d87b-9859-4a03-8f0d-5e06b3985293
+
+------------------------------------------
+[2026-03-03 11:04:17] [1/1] Executing: SHOW DATABASES
+------------------------------------------
+...
+[2026-03-03 11:04:19] [Status] FINISHED_STATE
++-----------+
+| namespace |
++-----------+
+| default   |
++-----------+
+1 row(s) in set
+
+[2026-03-03 11:04:19] All SQL statements completed successfully.
+```
+
+## 技术说明
+
+### 缓存机制
+
+工具使用 JAR 缓存机制提升启动性能：
+
+- 首次运行时，JAR 会被解压到 `~/.cache/emr-spark-tools/`
+- 后续运行直接使用缓存的 JAR，无需重复解压
+- 当工具版本更新时，缓存会自动刷新（基于 checksum 校验）
+
+### 清理缓存
+
+如需清理缓存，可执行：
+
+```bash
+rm -rf ~/.cache/emr-spark-tools/
+```

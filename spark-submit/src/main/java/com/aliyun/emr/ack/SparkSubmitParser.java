@@ -168,6 +168,39 @@ public class SparkSubmitParser {
                 if (i + 1 < args.length) {
                     result.setDeployMode(args[++i]);
                 }
+            } else if ("-f".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setSqlFile(args[++i]);
+                }
+            } else if ("-e".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setSqlStatement(args[++i]);
+                }
+            } else if ("--timeout".equals(arg)) {
+                if (i + 1 < args.length) {
+                    String value = args[++i];
+                    try {
+                        result.setTimeoutSeconds(Long.parseLong(value));
+                    } catch (NumberFormatException e) {
+                        System.err.println("Warning: Invalid timeout value '" + value + "', ignoring");
+                    }
+                }
+            } else if ("--kyuubi-url".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setKyuubiUrl(args[++i]);
+                }
+            } else if ("--kyuubi-user".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setKyuubiUser(args[++i]);
+                }
+            } else if ("--kyuubi-password".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setKyuubiPassword(args[++i]);
+                }
+            } else if ("--config-file".equals(arg)) {
+                if (i + 1 < args.length) {
+                    result.setConfigFile(args[++i]);
+                }
             } else if (arg.startsWith("--")) {
                 // Unknown option, skip
                 if (i + 1 < args.length && !args[i + 1].startsWith("-")) {

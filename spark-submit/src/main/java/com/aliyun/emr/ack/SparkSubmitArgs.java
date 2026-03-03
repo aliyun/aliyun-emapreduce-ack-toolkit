@@ -27,6 +27,15 @@ public class SparkSubmitArgs {
     private List<String> repositories = new ArrayList<>();
     private String driverCores;
     private String deployMode;
+    private String sqlFile;        // -f: SQL file path
+    private String sqlStatement;   // -e: SQL statement string
+    private Long timeoutSeconds;   // --timeout: job timeout in seconds
+    
+    // Kyuubi connection configuration (command-line override)
+    private String kyuubiUrl;      // --kyuubi-url: Kyuubi server URL
+    private String kyuubiUser;     // --kyuubi-user: Kyuubi username
+    private String kyuubiPassword; // --kyuubi-password: Kyuubi password
+    private String configFile;     // --config-file: custom config file path
     
     public String getName() {
         return name;
@@ -170,6 +179,69 @@ public class SparkSubmitArgs {
 
     public void setDeployMode(String deployMode) {
         this.deployMode = deployMode;
+    }
+
+    public String getSqlFile() {
+        return sqlFile;
+    }
+
+    public void setSqlFile(String sqlFile) {
+        this.sqlFile = sqlFile;
+    }
+
+    public String getSqlStatement() {
+        return sqlStatement;
+    }
+
+    public void setSqlStatement(String sqlStatement) {
+        this.sqlStatement = sqlStatement;
+    }
+
+    public Long getTimeoutSeconds() {
+        return timeoutSeconds;
+    }
+
+    public void setTimeoutSeconds(Long timeoutSeconds) {
+        this.timeoutSeconds = timeoutSeconds;
+    }
+
+    /**
+     * Check if this is a SQL submission mode (-f or -e)
+     */
+    public boolean isSqlMode() {
+        return sqlFile != null || sqlStatement != null;
+    }
+
+    public String getKyuubiUrl() {
+        return kyuubiUrl;
+    }
+
+    public void setKyuubiUrl(String kyuubiUrl) {
+        this.kyuubiUrl = kyuubiUrl;
+    }
+
+    public String getKyuubiUser() {
+        return kyuubiUser;
+    }
+
+    public void setKyuubiUser(String kyuubiUser) {
+        this.kyuubiUser = kyuubiUser;
+    }
+
+    public String getKyuubiPassword() {
+        return kyuubiPassword;
+    }
+
+    public void setKyuubiPassword(String kyuubiPassword) {
+        this.kyuubiPassword = kyuubiPassword;
+    }
+
+    public String getConfigFile() {
+        return configFile;
+    }
+
+    public void setConfigFile(String configFile) {
+        this.configFile = configFile;
     }
 }
 
