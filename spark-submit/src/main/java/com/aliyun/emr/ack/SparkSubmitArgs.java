@@ -30,6 +30,7 @@ public class SparkSubmitArgs {
     private String sqlFile;        // -f: SQL file path
     private String sqlStatement;   // -e: SQL statement string
     private Long timeoutSeconds;   // --timeout: job timeout in seconds
+    private boolean sqlSessionMode;  // --session: use session mode for SQL (-e/-f) instead of default batch mode
     
     // Kyuubi connection configuration (command-line override)
     private String kyuubiUrl;      // --kyuubi-url: Kyuubi server URL
@@ -204,6 +205,18 @@ public class SparkSubmitArgs {
 
     public void setTimeoutSeconds(Long timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
+    }
+
+    public boolean isSqlBatchMode() {
+        return !sqlSessionMode;
+    }
+
+    public boolean isSqlSessionMode() {
+        return sqlSessionMode;
+    }
+
+    public void setSqlSessionMode(boolean sqlSessionMode) {
+        this.sqlSessionMode = sqlSessionMode;
     }
 
     /**

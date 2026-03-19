@@ -56,13 +56,16 @@ public class KyuubiClient {
      */
     public BatchResponse submitBatch(SparkSubmitArgs args) throws IOException {
         String url = config.getBaseUrl() + "/batches";
-        
+
         JsonObject batchRequest = new JsonObject();
         batchRequest.addProperty("batchType", args.getBatchType());
         if (args.getClassName() != null && !args.getClassName().isEmpty()) {
             batchRequest.addProperty("className", args.getClassName());
         }
-        batchRequest.addProperty("resource", args.getResource());
+        // Resource is optional for built-in classes (e.g., SparkSQLCLIDriver)
+        if (args.getResource() != null && !args.getResource().isEmpty()) {
+            batchRequest.addProperty("resource", args.getResource());
+        }
         if (args.getProxyUser() != null && !args.getProxyUser().isEmpty()) {
             batchRequest.addProperty("proxyUser", args.getProxyUser());
         }

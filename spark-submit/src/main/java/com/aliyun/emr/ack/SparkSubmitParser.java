@@ -176,6 +176,8 @@ public class SparkSubmitParser {
                 if (i + 1 < args.length) {
                     result.setSqlStatement(args[++i]);
                 }
+            } else if ("--session".equals(arg)) {
+                result.setSqlSessionMode(true);
             } else if ("--timeout".equals(arg)) {
                 if (i + 1 < args.length) {
                     String value = args[++i];

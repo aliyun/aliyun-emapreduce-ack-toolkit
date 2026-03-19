@@ -129,7 +129,11 @@ public class SparkSubmit {
                     System.err.println("Error: -f and -e cannot be used together");
                     System.exit(1);
                 }
-                executeSqlMode(submitArgs, config, client);
+                if (submitArgs.isSqlBatchMode()) {
+                    executeSqlBatchMode(submitArgs, config, client);
+                } else {
+                    executeSqlMode(submitArgs, config, client);
+                }
                 return;
             }
             
@@ -408,6 +412,227 @@ public class SparkSubmit {
         }
     }
     
+    /**
+     * Execute SQL in batch mode: submit SQL as a Spark batch job using SparkSQLCLIDriver.
+     * Suitable for SQL execution in cluster mode with SparkSQLCLIDriver built into the image.
+     * SQL content is passed via application args: -e <sql> or -f <file>.
+     */
+    private static void executeSqlBatchMode(SparkSubmitArgs submitArgs, Config config, KyuubiClient client) {
+        try {
+            // Force cluster mode
+            submitArgs.setDeployMode("cluster");
+            submitArgs.getConf().put("spark.submit.deployMode", "cluster");
+
+            // Use SparkSQLCLIDriver as the main class (built into Spark image)
+            submitArgs.setClassName("org.apache.spark.sql.hive.thriftserver.SparkSQLCLIDriver");
+
+            // Resource points to the built-in spark-sql-cli JAR in the image
+            // Kyuubi requires a resource parameter, use local:// to reference the image's built-in JAR
+            submitArgs.setResource("local:///opt/spark/jars/spark-sql-cli.jar");
+
+            // Resolve SQL content:
+            // For -f (file), read the local file on the client side and pass content via -e.
+            // This avoids the file not being accessible inside the K8s Driver Pod.
+            String resolvedSqlContent;
+            String displaySqlSource;
+            if (submitArgs.getSqlFile() != null) {
+                System.out.println("[Batch] Reading SQL file locally: " + submitArgs.getSqlFile());
+                resolvedSqlContent = readSqlFile(submitArgs.getSqlFile());
+                displaySqlSource = "SQL File (read locally): " + submitArgs.getSqlFile();
+            } else {
+                resolvedSqlContent = submitArgs.getSqlStatement();
+                displaySqlSource = "SQL: " + truncateSql(submitArgs.getSqlStatement(), 100);
+            }
+
+            if (resolvedSqlContent == null || resolvedSqlContent.trim().isEmpty()) {
+                System.err.println("Error: SQL content is empty");
+                client.close();
+                System.exit(1);
+            }
+
+            // Build args for SparkSQLCLIDriver: -e <sql>
+            List<String> sqlArgs = new ArrayList<>();
+            sqlArgs.add("-e");
+            sqlArgs.add(resolvedSqlContent);
+            // Append any additional args from user
+            sqlArgs.addAll(submitArgs.getArgs());
+            submitArgs.setArgs(sqlArgs);
+
+            System.out.println("==========================================");
+            System.out.println("Submitting Spark SQL Batch Job to Kyuubi");
+            System.out.println("==========================================");
+            System.out.println("Kyuubi Server URL: " + config.getServerUrl());
+            System.out.println("Username: " + config.getUsername());
+            System.out.println("------------------------------------------");
+            System.out.println("Mode: Batch (SparkSQLCLIDriver cluster mode)");
+            System.out.println("Class: " + submitArgs.getClassName());
+            System.out.println(displaySqlSource);
+            if (!submitArgs.getConf().isEmpty()) {
+                System.out.println("Configuration:");
+                for (Map.Entry<String, String> entry : submitArgs.getConf().entrySet()) {
+                    System.out.println("  " + entry.getKey() + " = " + entry.getValue());
+                }
+            }
+            System.out.println("==========================================");
+            System.out.println();
+
+            // Submit batch
+            KyuubiClient.BatchResponse response = client.submitBatch(submitArgs);
+            String batchId = response.getId();
+
+            System.out.println("✅ Batch submitted successfully!");
+            System.out.println("Batch ID: " + batchId);
+            if (response.getAppId() != null && !response.getAppId().isEmpty()) {
+                System.out.println("Application ID: " + response.getAppId());
+            }
+            String appUrl = getApplicationUrl(config.getSparkHistoryServerUrl(), response.getAppId());
+            if (appUrl != null && !appUrl.isEmpty()) {
+                System.out.println("Application URL: " + appUrl);
+            }
+            System.out.println();
+            System.out.println("Waiting for job to complete...");
+            if (submitArgs.getTimeoutSeconds() != null) {
+                System.out.println("Timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
+            }
+            System.out.println("------------------------------------------");
+
+            // Poll for status and logs (reuse existing batch polling logic)
+            int logOffset = 0;
+            boolean firstLogOutput = true;
+            String lastState = response.getState();
+            int consecutiveErrors = 0;
+            final int MAX_CONSECUTIVE_ERRORS = 5;
+            long startTimeMillis = System.currentTimeMillis();
+            Long timeoutMillis = submitArgs.getTimeoutSeconds() != null ?
+                    submitArgs.getTimeoutSeconds() * 1000L : null;
+
+            while (true) {
+                try {
+                    Thread.sleep(POLL_INTERVAL_MS);
+
+                    // Check for timeout
+                    if (timeoutMillis != null) {
+                        long elapsedMillis = System.currentTimeMillis() - startTimeMillis;
+                        if (elapsedMillis >= timeoutMillis) {
+                            System.err.println("\n⚠️  Job timeout after " + submitArgs.getTimeoutSeconds() + " seconds.");
+                            System.err.println("Attempting to kill the job...");
+                            try {
+                                client.killBatch(batchId);
+                                System.err.println("Kill request sent for Batch ID: " + batchId);
+                            } catch (IOException killError) {
+                                System.err.println("Warning: Failed to kill job: " + killError.getMessage());
+                            }
+                            client.close();
+                            System.exit(124);
+                        }
+                    }
+
+                    // Get batch status
+                    KyuubiClient.BatchResponse status = client.getBatch(batchId);
+                    consecutiveErrors = 0;
+
+                    if (status.getState() != null) {
+                        String currentState = status.getState();
+                        if (!currentState.equals(lastState)) {
+                            System.out.println("\n[Status] " + lastState + " -> " + currentState);
+                            lastState = currentState;
+                        }
+                    }
+
+                    // Fetch and print new logs
+                    try {
+                        KyuubiClient.LogResponse logResponse = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
+                        if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
+                            if (firstLogOutput) {
+                                System.out.println("\n=== Job Logs ===");
+                                firstLogOutput = false;
+                            }
+                            for (String logLine : logResponse.getLogRowSet()) {
+                                System.out.println(logLine);
+                            }
+                            logOffset += logResponse.getLogRowSet().size();
+                            while (logResponse.getLogRowSet() != null &&
+                                   logResponse.getLogRowSet().size() == LOG_FETCH_SIZE) {
+                                logResponse = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
+                                if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
+                                    for (String logLine : logResponse.getLogRowSet()) {
+                                        System.out.println(logLine);
+                                    }
+                                    logOffset += logResponse.getLogRowSet().size();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (IOException logError) {
+                        // Non-fatal
+                    }
+
+                    if (status.isFinished()) {
+                        try {
+                            KyuubiClient.LogResponse finalLogs = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
+                            if (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
+                                for (String logLine : finalLogs.getLogRowSet()) {
+                                    System.out.println(logLine);
+                                }
+                            }
+                        } catch (IOException e) {
+                            // Ignore
+                        }
+
+                        System.out.println("\n------------------------------------------");
+                        System.out.println("Job finished!");
+                        System.out.println("Final State: " + status.getState());
+                        if (status.getAppId() != null && !status.getAppId().isEmpty()) {
+                            System.out.println("Application ID: " + status.getAppId());
+                        }
+                        String finalAppUrl = getApplicationUrl(config.getSparkHistoryServerUrl(), status.getAppId());
+                        if (finalAppUrl != null && !finalAppUrl.isEmpty()) {
+                            System.out.println("Application URL: " + finalAppUrl);
+                        }
+                        if (status.getAppDiagnostic() != null && !status.getAppDiagnostic().trim().isEmpty()) {
+                            System.out.println("\nDiagnostic Information:");
+                            System.out.println(status.getAppDiagnostic());
+                        }
+
+                        String finalState = status.getState();
+                        if ("ERROR".equals(finalState) || "CANCELED".equals(finalState)) {
+                            System.out.println("\n❌ Job failed or was canceled.");
+                            client.close();
+                            System.exit(1);
+                        } else {
+                            System.out.println("\n✅ Job completed successfully!");
+                            client.close();
+                            System.exit(0);
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("\n⚠️  Interrupted while waiting for job completion.");
+                    client.close();
+                    System.exit(130);
+                } catch (IOException e) {
+                    consecutiveErrors++;
+                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                        System.err.println("\n❌ Too many consecutive errors fetching status. Exiting.");
+                        System.err.println("Last error: " + e.getMessage());
+                        client.close();
+                        System.exit(1);
+                    } else if (consecutiveErrors == 1) {
+                        System.err.println("\n⚠️  Error fetching status: " + e.getMessage());
+                        System.err.println("Retrying... (will exit after " + MAX_CONSECUTIVE_ERRORS + " consecutive errors)");
+                    }
+                }
+            }
+
+        } catch (Exception e) {
+            System.err.println("\n❌ Error: " + e.getMessage());
+            e.printStackTrace();
+            try { client.close(); } catch (IOException ex) { /* Ignore */ }
+            System.exit(1);
+        }
+    }
+
     /**
      * Execute SQL mode: create session, execute SQL statements, print results, close session.
      * Features:
@@ -959,6 +1184,8 @@ public class SparkSubmit {
         System.out.println("                                with code 124");
         System.out.println("  -e <sql-string>               Execute the given SQL statement (spark-sql mode)");
         System.out.println("  -f <sql-file>                 Execute SQL from the given file (spark-sql mode)");
+        System.out.println("  --session                     Use session mode for SQL (-e/-f) instead of default batch mode.");
+        System.out.println("                                Session mode returns query results as a table.");
         System.out.println("  --kyuubi-url <url>            Kyuubi server URL (overrides all other config)");
         System.out.println("  --kyuubi-user <user>          Kyuubi username (overrides all other config)");
         System.out.println("  --kyuubi-password <pwd>       Kyuubi password (overrides all other config)");

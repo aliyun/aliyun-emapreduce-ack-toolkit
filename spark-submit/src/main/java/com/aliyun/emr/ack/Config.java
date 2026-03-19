@@ -13,7 +13,7 @@ public class Config {
     private static final String DEFAULT_SERVER_URL = "http://localhost:10099";
     private static final String DEFAULT_USERNAME = "kyuubi-server";
     private static final String DEFAULT_PASSWORD = "kyuubi-server";
-    
+
     private String serverUrl;
     private String username;
     private String password;
@@ -126,10 +126,10 @@ public class Config {
         String envHistoryUrl = System.getenv("SPARK_HISTORY_SERVER_URL");
         String propHistoryUrl = System.getProperty("spark.history.server.url");
         String fileHistoryUrl = props.getProperty("spark.history.server.url");
-        
+
         this.sparkHistoryServerUrl = propHistoryUrl != null ? propHistoryUrl :
             (envHistoryUrl != null ? envHistoryUrl : fileHistoryUrl);
-        
+
         // Check if using default values
         this.usingDefaultConfig = !configFileExists && 
             (envUrl == null && propUrl == null) &&
@@ -160,7 +160,7 @@ public class Config {
     public String getSparkHistoryServerUrl() {
         return sparkHistoryServerUrl;
     }
-    
+
     public String getBaseUrl() {
         String url = serverUrl;
         if (!url.endsWith("/")) {
