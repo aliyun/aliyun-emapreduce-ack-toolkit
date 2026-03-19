@@ -182,6 +182,10 @@ spark-submit \
 | `--archives` | 归档资源（支持 #name） | `--archives oss://bucket/env.tar.gz#env` |
 | `--status` | 查询 Batch 状态 | `--status jr-xxxx` |
 | `--kill` | 终止 Batch | `--kill jr-xxxx` |
+| `--timeout` | 作业超时时间（秒），超时后自动终止并返回退出码 124 | `--timeout 3600` |
+| `-e` | 执行内联 SQL 语句 | `-e "SHOW DATABASES"` |
+| `-f` | 执行 SQL 文件（支持本地路径和 OSS 远程路径） | `-f /path/to/query.sql` |
+| `--session` | SQL Session 模式，返回格式化表格结果（需配合 `-e` 或 `-f` 使用） | `--session -e "SELECT * FROM table"` |
 | `--kyuubi-url` | Kyuubi Server 地址 | `--kyuubi-url http://kyuubi:10099` |
 | `--kyuubi-user` | Kyuubi 用户名 | `--kyuubi-user admin` |
 | `--kyuubi-password` | Kyuubi 密码 | `--kyuubi-password secret` |
@@ -256,13 +260,23 @@ spark-sql --help
 
 ## Spark SQL 模式
 
+SQL 模式支持两种执行方式：
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **Batch 模式**（默认） | 通过 SparkSQLCLIDriver 提交 SQL 作为 Batch 作业 | 生产环境、长时间运行的 SQL 作业 |
+| **Session 模式**（`--session`） | 通过 Kyuubi Session API 执行 SQL，返回格式化表格结果 | 交互式查询、需要查看结果集 |
+
 ### 执行内联 SQL
 
 使用 `-e` 参数直接执行 SQL：
 
 ```bash
-# 单条 SQL
+# 单条 SQL（Batch 模式，默认）
 spark-sql -e "SHOW DATABASES"
+
+# Session 模式（返回格式化表格结果）
+spark-sql --session -e "SHOW DATABASES"
 
 # 多条 SQL（分号分隔）
 spark-sql -e "USE default; SHOW TABLES; SELECT * FROM my_table LIMIT 10"
@@ -273,11 +287,17 @@ spark-submit -e "SELECT 1 + 1 as result"
 
 ### 执行 SQL 文件
 
-使用 `-f` 参数执行 SQL 文件：
+使用 `-f` 参数执行 SQL 文件，支持本地文件路径和远程 URI（如 OSS）：
 
 ```bash
 # 执行本地 SQL 文件
 spark-sql -f /path/to/queries.sql
+
+# 执行远程 SQL 文件（OSS）
+spark-sql -f oss://your-bucket/sql/etl_job.sql
+
+# Session 模式执行 SQL 文件
+spark-sql --session -f /path/to/queries.sql
 
 # 使用 spark-submit 也可以
 spark-submit -f /path/to/etl_job.sql
@@ -285,13 +305,41 @@ spark-submit -f /path/to/etl_job.sql
 
 ### SQL 模式特性
 
+**Batch 模式（默认）：**
+- 通过 SparkSQLCLIDriver 在 cluster 模式下执行 SQL
+- SQL 文件在客户端本地读取后传递给 Spark Driver
+- **不返回查询结果数据**，仅输出作业日志和执行状态
+- 适合生产环境的长时间运行作业（如 ETL、数据导入导出）
+- 支持远程 SQL 文件（OSS 等）
+
+**Session 模式（`--session`）：**
 - 基于 Kyuubi Session API，一个 Session 中顺序执行多条语句
 - 实时流式输出 Operation 日志（来自 Kyuubi Server 和 Spark Engine）
+- **返回格式化表格结果**，适合交互式查询
 - 30 分钟心跳超时：如果任务无日志/状态更新超过 30 分钟，自动终止
-- 退出码：成功 `0`，失败 `1`，超时 `124`
-- 结果集以格式化表格输出
+- 适合交互式查询和需要查看结果集的场景
+
+### 超时设置
+
+使用 `--timeout` 参数设置作业超时时间：
+
+```bash
+# 设置 1 小时超时
+spark-sql -f /path/to/long_query.sql --timeout 3600
+```
+
+### 退出码
+
+| 退出码 | 说明 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 失败 |
+| 124 | 超时 |
+| 130 | 被中断 |
 
 ### SQL 执行成功示例
+
+**Session 模式示例（`--session`）：**
 
 ```
 ==========================================
@@ -318,6 +366,40 @@ SQL statements to execute: 1
 1 row(s) in set
 
 [2026-03-03 11:04:19] All SQL statements completed successfully.
+```
+
+**Batch 模式示例（默认）：**
+
+```
+==========================================
+Submitting Spark SQL Batch Job to Kyuubi
+==========================================
+Kyuubi Server URL: http://47.110.75.67:10099
+Username: emr-user
+------------------------------------------
+Mode: Batch (SparkSQLCLIDriver cluster mode)
+Class: org.apache.spark.sql.hive.thriftserver.SparkSQLCLIDriver
+SQL: SHOW DATABASES
+==========================================
+
+✅ Batch submitted successfully!
+Batch ID: 176b69b6-f8f4-4e6f-a85a-87d290ee63cd
+Application ID: spark-d99461f259674299bfd3faf71acb902c
+Application URL: http://spark-history-server:18080/history/spark-d99461f259674299bfd3faf71acb902c/1/
+
+Waiting for job to complete...
+------------------------------------------
+
+=== Job Logs ===
+...
+[Status] RUNNING -> FINISHED
+
+------------------------------------------
+Job finished!
+Final State: FINISHED
+Application ID: spark-d99461f259674299bfd3faf71acb902c
+
+✅ Job completed successfully!
 ```
 
 ## 技术说明
