@@ -9,12 +9,14 @@ import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -206,6 +208,53 @@ public class KyuubiClient {
         }
     }
     
+    /**
+     * Upload a file to Kyuubi server (requires kyuubi-upload-plugin).
+     * The server uploads the file to the configured staging path (e.g., OSS)
+     * and returns the remote URI.
+     *
+     * @return the remote URI (e.g., oss://bucket/.../query.sql)
+     * @throws IOException on network error or non-2xx response
+     */
+    public String uploadFile(byte[] content, String fileName) throws IOException {
+        String url = config.getBaseUrl() + "/files/upload";
+
+        String boundary = "----SparkSubmitBoundary" + System.currentTimeMillis();
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        byte[] header = ("--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"\r\n"
+                + "Content-Type: application/octet-stream\r\n"
+                + "\r\n").getBytes(StandardCharsets.UTF_8);
+        body.write(header);
+        body.write(content);
+        byte[] footer = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
+        body.write(footer);
+
+        HttpPost post = new HttpPost(url);
+        post.setHeader(HttpHeaders.CONTENT_TYPE, "multipart/form-data; boundary=" + boundary);
+        post.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+        post.setEntity(new ByteArrayEntity(body.toByteArray()));
+
+        try (CloseableHttpResponse response = httpClient.execute(post)) {
+            int statusCode = response.getStatusLine().getStatusCode();
+            HttpEntity entity = response.getEntity();
+            String responseBody = entity != null
+                    ? EntityUtils.toString(entity, StandardCharsets.UTF_8) : "";
+
+            if (statusCode >= 200 && statusCode < 300) {
+                JsonObject json = gson.fromJson(responseBody, JsonObject.class);
+                if (json != null && json.has("uri")) {
+                    return json.get("uri").getAsString();
+                }
+                throw new IOException("Upload succeeded but response missing 'uri': " + responseBody);
+            } else {
+                throw new IOException("Failed to upload file (HTTP " + statusCode + "): "
+                        + response.getStatusLine() + ", response: " + responseBody);
+            }
+        }
+    }
+
     // =============================================
     // Session & Operation API (for spark-sql mode)
     // =============================================

@@ -20,6 +20,7 @@ public class Config {
     private String sparkHistoryServerUrl;
     private boolean usingDefaultConfig;
     private String configFile;
+    private Properties allProperties = new Properties();
     
     public Config() {
         loadConfig();
@@ -76,6 +77,7 @@ public class Config {
         if (configFileExists) {
             try (FileInputStream fis = new FileInputStream(file)) {
                 props.load(fis);
+                allProperties.putAll(props);
             } catch (IOException e) {
                 System.err.println("Warning: Failed to load config file: " + configFile + ", error: " + e.getMessage());
                 e.printStackTrace();
@@ -159,6 +161,10 @@ public class Config {
     
     public String getSparkHistoryServerUrl() {
         return sparkHistoryServerUrl;
+    }
+
+    public String getProperty(String key) {
+        return allProperties.getProperty(key);
     }
 
     public String getBaseUrl() {

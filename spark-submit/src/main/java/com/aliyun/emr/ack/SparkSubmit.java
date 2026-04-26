@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Main entry point for spark-submit command
@@ -20,6 +21,7 @@ public class SparkSubmit {
     private static final int LOG_FETCH_SIZE = 100;
     private static final long HEARTBEAT_TIMEOUT_MS = 30 * 60 * 1000L; // 30 minutes no-activity timeout
     private static final long HEARTBEAT_LOG_INTERVAL_MS = 60 * 1000L; // 1 minute between heartbeat log messages
+    private static final int SQL_UPLOAD_THRESHOLD_BYTES = 10 * 1024; // 10KB, conservative for CJK chars + JSON escaping + K8s pod spec overhead
     
     /**
      * Build Spark History Server URL from application ID
@@ -233,7 +235,7 @@ public class SparkSubmit {
             KyuubiClient.BatchResponse response = client.submitBatch(submitArgs);
             String batchId = response.getId();
             
-            System.out.println("✅ Batch submitted successfully!");
+            System.out.println("[" + timestamp() + "] Batch submitted successfully!");
             System.out.println("Batch ID: " + batchId);
             if (response.getAppId() != null && !response.getAppId().isEmpty()) {
                 System.out.println("Application ID: " + response.getAppId());
@@ -243,12 +245,12 @@ public class SparkSubmit {
                 System.out.println("Application URL: " + appUrl);
             }
             System.out.println();
-            System.out.println("Waiting for job to complete...");
+            System.out.println("[" + timestamp() + "] Waiting for job to complete...");
             if (submitArgs.getTimeoutSeconds() != null) {
                 System.out.println("Timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
             }
             System.out.println("------------------------------------------");
-            
+
             // Poll for status and logs
             int logOffset = 0;
             boolean firstLogOutput = true;
@@ -256,18 +258,20 @@ public class SparkSubmit {
             int consecutiveErrors = 0;
             final int MAX_CONSECUTIVE_ERRORS = 5;
             long startTimeMillis = System.currentTimeMillis();
-            Long timeoutMillis = submitArgs.getTimeoutSeconds() != null ? 
+            long lastActivityTime = System.currentTimeMillis();
+            long lastHeartbeatLogTime = System.currentTimeMillis();
+            Long timeoutMillis = submitArgs.getTimeoutSeconds() != null ?
                     submitArgs.getTimeoutSeconds() * 1000L : null;
-            
+
             while (true) {
                 try {
                     Thread.sleep(POLL_INTERVAL_MS);
-                    
+
                     // Check for timeout
                     if (timeoutMillis != null) {
                         long elapsedMillis = System.currentTimeMillis() - startTimeMillis;
                         if (elapsedMillis >= timeoutMillis) {
-                            System.err.println("\n⚠️  Job timeout after " + submitArgs.getTimeoutSeconds() + " seconds.");
+                            System.err.println("\n[" + timestamp() + "] Job timeout after " + submitArgs.getTimeoutSeconds() + " seconds.");
                             System.err.println("Attempting to kill the job...");
                             try {
                                 client.killBatch(batchId);
@@ -276,24 +280,28 @@ public class SparkSubmit {
                                 System.err.println("Warning: Failed to kill job: " + killError.getMessage());
                             }
                             client.close();
-                            System.exit(124); // Exit code 124 is commonly used for timeout (same as GNU timeout)
+                            System.exit(124);
                         }
                     }
-                    
+
                     // Get batch status
                     KyuubiClient.BatchResponse status = client.getBatch(batchId);
-                    consecutiveErrors = 0; // Reset error counter on success
-                    
+                    consecutiveErrors = 0;
+
                     // Print status update if changed
                     if (status.getState() != null) {
                         String currentState = status.getState();
                         if (!currentState.equals(lastState)) {
-                            System.out.println("\n[Status] " + lastState + " -> " + currentState);
+                            long elapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
+                            System.out.println("\n[" + timestamp() + "] [Status] " + lastState + " -> " + currentState
+                                    + " (elapsed: " + formatDuration(elapsedSec) + ")");
                             lastState = currentState;
+                            lastActivityTime = System.currentTimeMillis();
                         }
                     }
-                    
+
                     // Fetch and print new logs
+                    boolean hasNewLogs = false;
                     try {
                         KyuubiClient.LogResponse logResponse = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
                         if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
@@ -305,9 +313,10 @@ public class SparkSubmit {
                                 System.out.println(logLine);
                             }
                             logOffset += logResponse.getLogRowSet().size();
-                            
-                            // Continue fetching if we got a full page (might have more logs)
-                            while (logResponse.getLogRowSet() != null && 
+                            hasNewLogs = true;
+                            lastActivityTime = System.currentTimeMillis();
+
+                            while (logResponse.getLogRowSet() != null &&
                                    logResponse.getLogRowSet().size() == LOG_FETCH_SIZE) {
                                 logResponse = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
                                 if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
@@ -321,30 +330,33 @@ public class SparkSubmit {
                             }
                         }
                     } catch (IOException logError) {
-                        // Log fetching errors are non-fatal, continue
                         if (consecutiveErrors == 0) {
-                            System.err.println("\n⚠️  Warning: Could not fetch logs: " + logError.getMessage());
+                            System.err.println("\n[" + timestamp() + "] Warning: Could not fetch logs: " + logError.getMessage());
                         }
                     }
-                    
+
                     // Check if finished
                     if (status.isFinished()) {
                         // Try to fetch any remaining logs
                         try {
                             KyuubiClient.LogResponse finalLogs = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
-                            if (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
+                            while (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
                                 for (String logLine : finalLogs.getLogRowSet()) {
                                     System.out.println(logLine);
                                 }
+                                logOffset += finalLogs.getLogRowSet().size();
+                                finalLogs = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
                             }
                         } catch (IOException e) {
                             // Ignore final log fetch errors
                         }
-                        
+
+                        long totalElapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
                         System.out.println("\n------------------------------------------");
-                        System.out.println("Job finished!");
+                        System.out.println("[" + timestamp() + "] Job finished!");
                         System.out.println("Final State: " + status.getState());
-                        
+                        System.out.println("Total Time: " + formatDuration(totalElapsedSec));
+
                         if (status.getAppId() != null && !status.getAppId().isEmpty()) {
                             System.out.println("Application ID: " + status.getAppId());
                         }
@@ -352,14 +364,13 @@ public class SparkSubmit {
                         if (finalAppUrl != null && !finalAppUrl.isEmpty()) {
                             System.out.println("Application URL: " + finalAppUrl);
                         }
-                        
-                        if (status.getAppDiagnostic() != null && !status.getAppDiagnostic().isEmpty() && 
-                            !status.getAppDiagnostic().trim().isEmpty()) {
-                            System.out.println("\nDiagnostic Information:");
+
+                        if (status.getAppDiagnostic() != null && !status.getAppDiagnostic().trim().isEmpty()) {
+                            System.out.println("\n=== Diagnostic Information ===");
                             System.out.println(status.getAppDiagnostic());
+                            System.out.println("=== End Diagnostic ===");
                         }
-                        
-                        // Exit with appropriate code
+
                         String finalState = status.getState();
                         if ("ERROR".equals(finalState) || "CANCELED".equals(finalState)) {
                             System.out.println("\n❌ Job failed or was canceled.");
@@ -371,24 +382,35 @@ public class SparkSubmit {
                             System.exit(0);
                         }
                     }
-                    
+
+                    // Heartbeat message when idle
+                    long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatLogTime;
+                    if (timeSinceLastHeartbeat >= HEARTBEAT_LOG_INTERVAL_MS) {
+                        if (!hasNewLogs) {
+                            long elapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
+                            long idleMinutes = (System.currentTimeMillis() - lastActivityTime) / 60000;
+                            System.out.println("[" + timestamp() + "] [Heartbeat] Still running... (state: " + lastState
+                                    + ", elapsed: " + formatDuration(elapsedSec) + ", idle: " + idleMinutes + "m)");
+                        }
+                        lastHeartbeatLogTime = System.currentTimeMillis();
+                    }
+
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    System.err.println("\n⚠️  Interrupted while waiting for job completion.");
+                    System.err.println("\n[" + timestamp() + "] Interrupted while waiting for job completion.");
                     client.close();
                     System.exit(130);
                 } catch (IOException e) {
                     consecutiveErrors++;
                     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                        System.err.println("\n❌ Too many consecutive errors fetching status. Exiting.");
+                        System.err.println("\n[" + timestamp() + "] Too many consecutive errors fetching status. Exiting.");
                         System.err.println("Last error: " + e.getMessage());
                         client.close();
                         System.exit(1);
                     } else if (consecutiveErrors == 1) {
-                        System.err.println("\n⚠️  Error fetching status: " + e.getMessage());
+                        System.err.println("\n[" + timestamp() + "] Error fetching status: " + e.getMessage());
                         System.err.println("Retrying... (will exit after " + MAX_CONSECUTIVE_ERRORS + " consecutive errors)");
                     }
-                    // Continue polling in case of temporary network issues
                 }
             }
             
@@ -430,13 +452,11 @@ public class SparkSubmit {
             // Kyuubi requires a resource parameter, use local:// to reference the image's built-in JAR
             submitArgs.setResource("local:///opt/spark/jars/spark-sql-cli.jar");
 
-            // Resolve SQL content:
-            // For -f (file), read the local file on the client side and pass content via -e.
-            // This avoids the file not being accessible inside the K8s Driver Pod.
+            // Resolve SQL content
             String resolvedSqlContent;
             String displaySqlSource;
             if (submitArgs.getSqlFile() != null) {
-                System.out.println("[Batch] Reading SQL file locally: " + submitArgs.getSqlFile());
+                System.out.println("[" + timestamp() + "] [Batch] Reading SQL file locally: " + submitArgs.getSqlFile());
                 resolvedSqlContent = readSqlFile(submitArgs.getSqlFile());
                 displaySqlSource = "SQL File (read locally): " + submitArgs.getSqlFile();
             } else {
@@ -450,10 +470,21 @@ public class SparkSubmit {
                 System.exit(1);
             }
 
-            // Build args for SparkSQLCLIDriver: -e <sql>
+            // Build args for SparkSQLCLIDriver
+            // For large SQL (>32KB), upload to OSS and use -f oss://... to avoid K8s pod spec size limits
             List<String> sqlArgs = new ArrayList<>();
-            sqlArgs.add("-e");
-            sqlArgs.add(resolvedSqlContent);
+            byte[] sqlBytes = resolvedSqlContent.getBytes(StandardCharsets.UTF_8);
+
+            if (sqlBytes.length > SQL_UPLOAD_THRESHOLD_BYTES) {
+                String remoteUrl = uploadSqlFile(client, sqlBytes, submitArgs.getConf(), config);
+                sqlArgs.add("-f");
+                sqlArgs.add(remoteUrl);
+                displaySqlSource = "SQL File (uploaded): " + remoteUrl
+                        + " (" + (sqlBytes.length / 1024) + " KB)";
+            } else {
+                sqlArgs.add("-e");
+                sqlArgs.add(resolvedSqlContent);
+            }
             // Append any additional args from user
             sqlArgs.addAll(submitArgs.getArgs());
             submitArgs.setArgs(sqlArgs);
@@ -480,7 +511,7 @@ public class SparkSubmit {
             KyuubiClient.BatchResponse response = client.submitBatch(submitArgs);
             String batchId = response.getId();
 
-            System.out.println("✅ Batch submitted successfully!");
+            System.out.println("[" + timestamp() + "] Batch submitted successfully!");
             System.out.println("Batch ID: " + batchId);
             if (response.getAppId() != null && !response.getAppId().isEmpty()) {
                 System.out.println("Application ID: " + response.getAppId());
@@ -490,19 +521,21 @@ public class SparkSubmit {
                 System.out.println("Application URL: " + appUrl);
             }
             System.out.println();
-            System.out.println("Waiting for job to complete...");
+            System.out.println("[" + timestamp() + "] Waiting for job to complete...");
             if (submitArgs.getTimeoutSeconds() != null) {
                 System.out.println("Timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
             }
             System.out.println("------------------------------------------");
 
-            // Poll for status and logs (reuse existing batch polling logic)
+            // Poll for status and logs
             int logOffset = 0;
             boolean firstLogOutput = true;
             String lastState = response.getState();
             int consecutiveErrors = 0;
             final int MAX_CONSECUTIVE_ERRORS = 5;
             long startTimeMillis = System.currentTimeMillis();
+            long lastActivityTime = System.currentTimeMillis();
+            long lastHeartbeatLogTime = System.currentTimeMillis();
             Long timeoutMillis = submitArgs.getTimeoutSeconds() != null ?
                     submitArgs.getTimeoutSeconds() * 1000L : null;
 
@@ -514,7 +547,7 @@ public class SparkSubmit {
                     if (timeoutMillis != null) {
                         long elapsedMillis = System.currentTimeMillis() - startTimeMillis;
                         if (elapsedMillis >= timeoutMillis) {
-                            System.err.println("\n⚠️  Job timeout after " + submitArgs.getTimeoutSeconds() + " seconds.");
+                            System.err.println("\n[" + timestamp() + "] Job timeout after " + submitArgs.getTimeoutSeconds() + " seconds.");
                             System.err.println("Attempting to kill the job...");
                             try {
                                 client.killBatch(batchId);
@@ -534,12 +567,16 @@ public class SparkSubmit {
                     if (status.getState() != null) {
                         String currentState = status.getState();
                         if (!currentState.equals(lastState)) {
-                            System.out.println("\n[Status] " + lastState + " -> " + currentState);
+                            long elapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
+                            System.out.println("\n[" + timestamp() + "] [Status] " + lastState + " -> " + currentState
+                                    + " (elapsed: " + formatDuration(elapsedSec) + ")");
                             lastState = currentState;
+                            lastActivityTime = System.currentTimeMillis();
                         }
                     }
 
                     // Fetch and print new logs
+                    boolean hasNewLogs = false;
                     try {
                         KyuubiClient.LogResponse logResponse = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
                         if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
@@ -551,6 +588,9 @@ public class SparkSubmit {
                                 System.out.println(logLine);
                             }
                             logOffset += logResponse.getLogRowSet().size();
+                            hasNewLogs = true;
+                            lastActivityTime = System.currentTimeMillis();
+
                             while (logResponse.getLogRowSet() != null &&
                                    logResponse.getLogRowSet().size() == LOG_FETCH_SIZE) {
                                 logResponse = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
@@ -571,18 +611,23 @@ public class SparkSubmit {
                     if (status.isFinished()) {
                         try {
                             KyuubiClient.LogResponse finalLogs = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
-                            if (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
+                            while (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
                                 for (String logLine : finalLogs.getLogRowSet()) {
                                     System.out.println(logLine);
                                 }
+                                logOffset += finalLogs.getLogRowSet().size();
+                                finalLogs = client.getBatchLogs(batchId, logOffset, LOG_FETCH_SIZE);
                             }
                         } catch (IOException e) {
                             // Ignore
                         }
 
+                        long totalElapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
                         System.out.println("\n------------------------------------------");
-                        System.out.println("Job finished!");
+                        System.out.println("[" + timestamp() + "] Job finished!");
                         System.out.println("Final State: " + status.getState());
+                        System.out.println("Total Time: " + formatDuration(totalElapsedSec));
+
                         if (status.getAppId() != null && !status.getAppId().isEmpty()) {
                             System.out.println("Application ID: " + status.getAppId());
                         }
@@ -591,8 +636,9 @@ public class SparkSubmit {
                             System.out.println("Application URL: " + finalAppUrl);
                         }
                         if (status.getAppDiagnostic() != null && !status.getAppDiagnostic().trim().isEmpty()) {
-                            System.out.println("\nDiagnostic Information:");
+                            System.out.println("\n=== Diagnostic Information ===");
                             System.out.println(status.getAppDiagnostic());
+                            System.out.println("=== End Diagnostic ===");
                         }
 
                         String finalState = status.getState();
@@ -606,20 +652,33 @@ public class SparkSubmit {
                             System.exit(0);
                         }
                     }
+
+                    // Heartbeat message when idle
+                    long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatLogTime;
+                    if (timeSinceLastHeartbeat >= HEARTBEAT_LOG_INTERVAL_MS) {
+                        if (!hasNewLogs) {
+                            long elapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
+                            long idleMinutes = (System.currentTimeMillis() - lastActivityTime) / 60000;
+                            System.out.println("[" + timestamp() + "] [Heartbeat] Still running... (state: " + lastState
+                                    + ", elapsed: " + formatDuration(elapsedSec) + ", idle: " + idleMinutes + "m)");
+                        }
+                        lastHeartbeatLogTime = System.currentTimeMillis();
+                    }
+
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    System.err.println("\n⚠️  Interrupted while waiting for job completion.");
+                    System.err.println("\n[" + timestamp() + "] Interrupted while waiting for job completion.");
                     client.close();
                     System.exit(130);
                 } catch (IOException e) {
                     consecutiveErrors++;
                     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                        System.err.println("\n❌ Too many consecutive errors fetching status. Exiting.");
+                        System.err.println("\n[" + timestamp() + "] Too many consecutive errors fetching status. Exiting.");
                         System.err.println("Last error: " + e.getMessage());
                         client.close();
                         System.exit(1);
                     } else if (consecutiveErrors == 1) {
-                        System.err.println("\n⚠️  Error fetching status: " + e.getMessage());
+                        System.err.println("\n[" + timestamp() + "] Error fetching status: " + e.getMessage());
                         System.err.println("Retrying... (will exit after " + MAX_CONSECUTIVE_ERRORS + " consecutive errors)");
                     }
                 }
@@ -774,6 +833,8 @@ public class SparkSubmit {
      */
     private static void executeSingleStatement(KyuubiClient client, String sessionHandle, String sql,
             Long overallTimeoutMillis, long overallStartTimeMillis) throws IOException, InterruptedException {
+        long stmtStartTime = System.currentTimeMillis();
+
         // Execute statement asynchronously
         KyuubiClient.OperationResponse opResponse = client.executeStatement(sessionHandle, sql, true);
         String operationHandle = opResponse.getIdentifier();
@@ -879,10 +940,16 @@ public class SparkSubmit {
                     "ERROR_STATE".equals(currentState) || "CANCELED_STATE".equals(currentState) || "TIMEOUT_STATE".equals(currentState)) {
                     String errorMsg = "Statement " + currentState;
                     if (event.getException() != null && !event.getException().isEmpty()) {
-                        errorMsg += ": " + event.getException();
+                        System.err.println("\n[" + timestamp() + "] === Full Exception ===");
+                        System.err.println(event.getException());
+                        System.err.println("=== End Exception ===\n");
+                        errorMsg += ": " + extractFirstLine(event.getException());
                     }
                     throw new IOException(errorMsg);
                 }
+
+                long stmtElapsedSec = (System.currentTimeMillis() - stmtStartTime) / 1000;
+                System.out.println("[" + timestamp() + "] Statement completed in " + formatDuration(stmtElapsedSec));
                 break;
             }
 
@@ -1150,6 +1217,105 @@ public class SparkSubmit {
 
     private static String timestamp() {
         return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+    }
+
+    private static String formatDuration(long totalSeconds) {
+        long hours = totalSeconds / 3600;
+        long minutes = (totalSeconds % 3600) / 60;
+        long seconds = totalSeconds % 60;
+        if (hours > 0) return String.format("%dh %dm %ds", hours, minutes, seconds);
+        if (minutes > 0) return String.format("%dm %ds", minutes, seconds);
+        return String.format("%ds", seconds);
+    }
+
+    private static String extractFirstLine(String text) {
+        if (text == null) return "";
+        int newline = text.indexOf('\n');
+        return newline >= 0 ? text.substring(0, newline) : text;
+    }
+
+    /**
+     * Upload large SQL file using dual strategy:
+     * 1. Try Kyuubi server-side upload (requires kyuubi-upload-plugin)
+     * 2. Fallback to client-side OSS upload (requires OSS credentials in --conf)
+     */
+    private static String uploadSqlFile(KyuubiClient client, byte[] sqlBytes,
+                                         Map<String, String> conf, Config config) throws IOException {
+        System.err.println("[" + timestamp() + "] SQL content is " + (sqlBytes.length / 1024) +
+                " KB (threshold: " + (SQL_UPLOAD_THRESHOLD_BYTES / 1024) + " KB), uploading...");
+
+        // Strategy 1: Kyuubi server-side upload (zero client-side OSS config needed)
+        try {
+            String uri = client.uploadFile(sqlBytes, "query.sql");
+            System.err.println("[" + timestamp() + "] SQL uploaded via Kyuubi server: " + uri);
+            return uri;
+        } catch (IOException e) {
+            String msg = e.getMessage();
+            boolean pluginNotAvailable = msg != null &&
+                    (msg.contains("HTTP 404") || msg.contains("HTTP 405") || msg.contains("Not Found"));
+            if (pluginNotAvailable) {
+                System.err.println("[" + timestamp() + "] Kyuubi upload plugin not available, " +
+                        "trying client-side OSS upload...");
+            } else {
+                throw e;
+            }
+        }
+
+        // Strategy 2: Client-side OSS upload (fallback for older Kyuubi without plugin)
+        return uploadSqlToOss(sqlBytes, conf, config);
+    }
+
+    private static String getOssConfig(String key, Map<String, String> conf, Config config) {
+        String value = conf.get(key);
+        if (value == null) {
+            value = config.getProperty(key);
+        }
+        return value;
+    }
+
+    private static String uploadSqlToOss(byte[] sqlBytes, Map<String, String> conf,
+                                          Config config) throws IOException {
+        String accessKeyId = getOssConfig("spark.hadoop.fs.oss.accessKeyId", conf, config);
+        String accessKeySecret = getOssConfig("spark.hadoop.fs.oss.accessKeySecret", conf, config);
+        String endpoint = getOssConfig("spark.hadoop.fs.oss.endpoint", conf, config);
+        String uploadPath = getOssConfig("spark.kubernetes.file.upload.path", conf, config);
+
+        if (accessKeyId == null || accessKeySecret == null || endpoint == null || uploadPath == null) {
+            StringBuilder missing = new StringBuilder();
+            if (accessKeyId == null) missing.append("\n  spark.hadoop.fs.oss.accessKeyId=<your-access-key-id>");
+            if (accessKeySecret == null) missing.append("\n  spark.hadoop.fs.oss.accessKeySecret=<your-access-key-secret>");
+            if (endpoint == null) missing.append("\n  spark.hadoop.fs.oss.endpoint=<oss-endpoint>");
+            if (uploadPath == null) missing.append("\n  spark.kubernetes.file.upload.path=oss://<bucket>/<staging-path>");
+            throw new IOException("SQL content is " + (sqlBytes.length / 1024) + " KB, exceeds " +
+                    (SQL_UPLOAD_THRESHOLD_BYTES / 1024) + " KB threshold. " +
+                    "OSS upload is required but the following configurations are missing:" + missing +
+                    "\n\nAdd via --conf or in ~/.spark-submit.conf");
+        }
+
+        String[] parsed = OssUploader.parseOssPath(uploadPath);
+        if (parsed == null) {
+            throw new IOException("Invalid spark.kubernetes.file.upload.path: " + uploadPath +
+                    ". Expected format: oss://<bucket>/<path>");
+        }
+
+        String bucket = parsed[0];
+        String basePath = parsed[1];
+        String objectKey = basePath + "/spark-sql-upload/" + UUID.randomUUID().toString() + ".sql";
+        String publicEndpoint = OssUploader.toPublicEndpoint(endpoint);
+
+        System.out.println("[" + timestamp() + "] SQL content is " + (sqlBytes.length / 1024) +
+                " KB, uploading to OSS...");
+
+        org.apache.http.impl.client.CloseableHttpClient httpClient =
+                org.apache.http.impl.client.HttpClients.createDefault();
+        try {
+            String ossUrl = OssUploader.upload(httpClient, publicEndpoint, bucket, objectKey,
+                    sqlBytes, accessKeyId, accessKeySecret);
+            System.out.println("[" + timestamp() + "] SQL uploaded to: " + ossUrl);
+            return ossUrl;
+        } finally {
+            httpClient.close();
+        }
     }
 
     private static void printUsage() {
