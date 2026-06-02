@@ -54,12 +54,42 @@ public class SparkSubmit {
      */
     private static String getApplicationUrl(String historyServerUrl, String appId) {
         // Only build History Server URL if configured
-        if (historyServerUrl != null && !historyServerUrl.isEmpty() && 
+        if (historyServerUrl != null && !historyServerUrl.isEmpty() &&
             appId != null && !appId.isEmpty()) {
             return buildHistoryServerUrl(historyServerUrl, appId);
         }
-        
+
         return null;
+    }
+
+    /**
+     * Build a clickable, live Spark Web UI URL for a running batch from its appUrl.
+     * - K8s: appUrl is the driver service (http://<name>-driver-svc.<ns>.svc:4040),
+     *   which is only reachable inside the cluster, so route it through Kyuubi's
+     *   /engine-ui/ reverse proxy: <kyuubi>/engine-ui/<host:port>/
+     * - YARN: appUrl is the RM tracking URL (already a full, reachable URL) -> return as-is.
+     * Returns null if appUrl is not yet available (e.g. while the batch is still PENDING).
+     * Note: only valid while the driver is alive; after the job finishes the link stops
+     * working (use the Spark History Server for finished jobs).
+     */
+    private static String buildSparkUiUrl(String kyuubiServerUrl, String appUrl) {
+        if (appUrl == null || appUrl.isEmpty()) {
+            return null;
+        }
+        // K8s driver UI -> proxy through Kyuubi.
+        // The driver UI host is a cluster-internal Service DNS name (...svc[.cluster.local]),
+        // unreachable from the client. Match on ".svc" rather than the UI port, which is
+        // configurable via spark.ui.port and therefore not guaranteed to be 4040.
+        if (kyuubiServerUrl != null && !kyuubiServerUrl.isEmpty()
+                && appUrl.startsWith("http://") && appUrl.contains(".svc")) {
+            String base = kyuubiServerUrl.trim();
+            if (base.endsWith("/")) {
+                base = base.substring(0, base.length() - 1);
+            }
+            return base + "/engine-ui/" + appUrl.substring("http://".length()) + "/";
+        }
+        // YARN tracking URL (or any other already-reachable URL): return as-is
+        return appUrl;
     }
     
     public static void main(String[] args) {
@@ -104,6 +134,11 @@ public class SparkSubmit {
                 System.out.println("State: " + status.getState());
                 if (status.getAppId() != null) {
                     System.out.println("Application ID: " + status.getAppId());
+                }
+                // Live driver UI (only reachable while the batch is running).
+                String sparkUi = buildSparkUiUrl(config.getServerUrl(), status.getAppUrl());
+                if (sparkUi != null && !sparkUi.isEmpty()) {
+                    System.out.println("Spark UI: " + sparkUi);
                 }
                 String appUrl = getApplicationUrl(config.getSparkHistoryServerUrl(), status.getAppId());
                 if (appUrl != null && !appUrl.isEmpty()) {
@@ -255,6 +290,7 @@ public class SparkSubmit {
             int logOffset = 0;
             boolean firstLogOutput = true;
             String lastState = response.getState();
+            boolean printedSparkUi = false;
             int consecutiveErrors = 0;
             final int MAX_CONSECUTIVE_ERRORS = 5;
             long startTimeMillis = System.currentTimeMillis();
@@ -297,6 +333,16 @@ public class SparkSubmit {
                                     + " (elapsed: " + formatDuration(elapsedSec) + ")");
                             lastState = currentState;
                             lastActivityTime = System.currentTimeMillis();
+                        }
+                    }
+
+                    // Print the live Spark UI link once the driver has registered (appUrl available).
+                    // K8s -> Kyuubi /engine-ui/ proxy; YARN -> RM tracking URL as-is.
+                    if (!printedSparkUi) {
+                        String sparkUi = buildSparkUiUrl(config.getServerUrl(), status.getAppUrl());
+                        if (sparkUi != null) {
+                            System.out.println("[" + timestamp() + "] Spark UI: " + sparkUi);
+                            printedSparkUi = true;
                         }
                     }
 
@@ -531,6 +577,7 @@ public class SparkSubmit {
             int logOffset = 0;
             boolean firstLogOutput = true;
             String lastState = response.getState();
+            boolean printedSparkUi = false;
             int consecutiveErrors = 0;
             final int MAX_CONSECUTIVE_ERRORS = 5;
             long startTimeMillis = System.currentTimeMillis();
@@ -572,6 +619,16 @@ public class SparkSubmit {
                                     + " (elapsed: " + formatDuration(elapsedSec) + ")");
                             lastState = currentState;
                             lastActivityTime = System.currentTimeMillis();
+                        }
+                    }
+
+                    // Print the live Spark UI link once the driver has registered (appUrl available).
+                    // K8s -> Kyuubi /engine-ui/ proxy; YARN -> RM tracking URL as-is.
+                    if (!printedSparkUi) {
+                        String sparkUi = buildSparkUiUrl(config.getServerUrl(), status.getAppUrl());
+                        if (sparkUi != null) {
+                            System.out.println("[" + timestamp() + "] Spark UI: " + sparkUi);
+                            printedSparkUi = true;
                         }
                     }
 
