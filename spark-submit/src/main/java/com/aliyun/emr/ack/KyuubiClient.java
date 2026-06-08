@@ -13,6 +13,7 @@ import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.DefaultHttpRequestRetryHandler;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 
@@ -43,6 +44,9 @@ public class KyuubiClient {
             .build();
         this.httpClient = HttpClients.custom()
             .setDefaultRequestConfig(requestConfig)
+            // Disable HttpClient's built-in retries so the application-level Retry
+            // is the single, predictable source of retries for the submission chain.
+            .setRetryHandler(new DefaultHttpRequestRetryHandler(0, false))
             .build();
         this.gson = new Gson();
     }
@@ -51,6 +55,14 @@ public class KyuubiClient {
         String auth = config.getUsername() + ":" + config.getPassword();
         byte[] encodedAuth = Base64.encodeBase64(auth.getBytes(StandardCharsets.UTF_8));
         return "Basic " + new String(encodedAuth);
+    }
+
+    /**
+     * Whether a conf key is for the client only (e.g. retry tuning) and must NOT
+     * be forwarded to Kyuubi/Spark as a batch or session config.
+     */
+    public static boolean isClientOnlyConf(String key) {
+        return key != null && key.startsWith("spark.submit.retry.");
     }
     
     /**
@@ -85,6 +97,9 @@ public class KyuubiClient {
         JsonObject conf = new JsonObject();
         if (!args.getConf().isEmpty()) {
             for (Map.Entry<String, String> entry : args.getConf().entrySet()) {
+                if (isClientOnlyConf(entry.getKey())) {
+                    continue; // client-only (e.g. retry tuning), do not leak into Spark/Kyuubi
+                }
                 conf.addProperty(entry.getKey(), entry.getValue());
             }
         }
@@ -131,12 +146,12 @@ public class KyuubiClient {
         try (CloseableHttpResponse response = httpClient.execute(post)) {
             HttpEntity entity = response.getEntity();
             String responseBody = EntityUtils.toString(entity, StandardCharsets.UTF_8);
-            
-            if (response.getStatusLine().getStatusCode() >= 200 && 
-                response.getStatusLine().getStatusCode() < 300) {
+
+            int statusCode = response.getStatusLine().getStatusCode();
+            if (statusCode >= 200 && statusCode < 300) {
                 return gson.fromJson(responseBody, BatchResponse.class);
             } else {
-                throw new IOException("Failed to submit batch: " + response.getStatusLine() + 
+                throw new HttpStatusException(statusCode, "Failed to submit batch: " + response.getStatusLine() +
                     ", response: " + responseBody);
             }
         }
@@ -249,7 +264,7 @@ public class KyuubiClient {
                 }
                 throw new IOException("Upload succeeded but response missing 'uri': " + responseBody);
             } else {
-                throw new IOException("Failed to upload file (HTTP " + statusCode + "): "
+                throw new HttpStatusException(statusCode, "Failed to upload file (HTTP " + statusCode + "): "
                         + response.getStatusLine() + ", response: " + responseBody);
             }
         }
@@ -269,6 +284,9 @@ public class KyuubiClient {
         if (configs != null && !configs.isEmpty()) {
             JsonObject confObj = new JsonObject();
             for (Map.Entry<String, String> entry : configs.entrySet()) {
+                if (isClientOnlyConf(entry.getKey())) {
+                    continue; // client-only (e.g. retry tuning), do not leak into session configs
+                }
                 confObj.addProperty(entry.getKey(), entry.getValue());
             }
             requestBody.add("configs", confObj);
