@@ -52,7 +52,7 @@ public class OssUploader {
             if (statusCode < 200 || statusCode >= 300) {
                 String body = response.getEntity() != null
                         ? EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8) : "";
-                throw new IOException("OSS upload failed: HTTP " + statusCode + ", response: " + body);
+                throw new HttpStatusException(statusCode, "OSS upload failed: HTTP " + statusCode + ", response: " + body);
             }
         }
 

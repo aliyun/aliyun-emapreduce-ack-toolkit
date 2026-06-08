@@ -158,7 +158,11 @@ public class SparkSubmit {
                 client.close();
                 System.exit(0);
             }
-            
+
+            // Build retry configs once (client-only; filtered out before sending to Kyuubi/Spark)
+            Retry.RetryConfig submitRetryCfg = buildSubmitRetryConfig(submitArgs.getConf(), config);
+            Retry.RetryConfig uploadRetryCfg = buildUploadRetryConfig(submitArgs.getConf(), config);
+
             // Handle SQL mode (-f or -e)
             if (submitArgs.isSqlMode()) {
                 // Validate mutually exclusive SQL options
@@ -167,7 +171,7 @@ public class SparkSubmit {
                     System.exit(1);
                 }
                 if (submitArgs.isSqlBatchMode()) {
-                    executeSqlBatchMode(submitArgs, config, client);
+                    executeSqlBatchMode(submitArgs, config, client, submitRetryCfg, uploadRetryCfg);
                 } else {
                     executeSqlMode(submitArgs, config, client);
                 }
@@ -236,6 +240,9 @@ public class SparkSubmit {
             if (!submitArgs.getConf().isEmpty()) {
                 System.out.println("Configuration:");
                 for (java.util.Map.Entry<String, String> entry : submitArgs.getConf().entrySet()) {
+                    if (KyuubiClient.isClientOnlyConf(entry.getKey())) {
+                        continue; // client-only (e.g. retry tuning), not sent to Spark/Kyuubi
+                    }
                     System.out.println("  " + entry.getKey() + " = " + entry.getValue());
                 }
             }
@@ -266,8 +273,8 @@ public class SparkSubmit {
                 System.out.println("Packages: " + String.join(",", submitArgs.getPackages()));
             }
             
-            // Submit batch
-            KyuubiClient.BatchResponse response = client.submitBatch(submitArgs);
+            // Submit batch (with retry on connection-phase failures only — never duplicates a job)
+            KyuubiClient.BatchResponse response = submitWithRetry(client, submitArgs, submitRetryCfg);
             String batchId = response.getId();
             
             System.out.println("[" + timestamp() + "] Batch submitted successfully!");
@@ -460,6 +467,18 @@ public class SparkSubmit {
                 }
             }
             
+        } catch (Retry.RetryInterruptedException e) {
+            // Interrupted (Ctrl-C) during retry backoff — exit with the interrupt code.
+            System.err.println("\n[" + timestamp() + "] Interrupted.");
+            if (client != null) {
+                try {
+                    client.close();
+                } catch (IOException ex) {
+                    // Ignore
+                }
+            }
+            System.err.flush();
+            System.exit(130);
         } catch (Exception e) {
             System.err.println("\n❌ Error: " + e.getMessage());
             if (e.getCause() != null) {
@@ -485,7 +504,8 @@ public class SparkSubmit {
      * Suitable for SQL execution in cluster mode with SparkSQLCLIDriver built into the image.
      * SQL content is passed via application args: -e <sql> or -f <file>.
      */
-    private static void executeSqlBatchMode(SparkSubmitArgs submitArgs, Config config, KyuubiClient client) {
+    private static void executeSqlBatchMode(SparkSubmitArgs submitArgs, Config config, KyuubiClient client,
+                                            Retry.RetryConfig submitRetryCfg, Retry.RetryConfig uploadRetryCfg) {
         try {
             // Force cluster mode
             submitArgs.setDeployMode("cluster");
@@ -522,7 +542,7 @@ public class SparkSubmit {
             byte[] sqlBytes = resolvedSqlContent.getBytes(StandardCharsets.UTF_8);
 
             if (sqlBytes.length > SQL_UPLOAD_THRESHOLD_BYTES) {
-                String remoteUrl = uploadSqlFile(client, sqlBytes, submitArgs.getConf(), config);
+                String remoteUrl = uploadSqlFile(client, sqlBytes, submitArgs.getConf(), config, uploadRetryCfg);
                 sqlArgs.add("-f");
                 sqlArgs.add(remoteUrl);
                 displaySqlSource = "SQL File (uploaded): " + remoteUrl
@@ -547,14 +567,17 @@ public class SparkSubmit {
             if (!submitArgs.getConf().isEmpty()) {
                 System.out.println("Configuration:");
                 for (Map.Entry<String, String> entry : submitArgs.getConf().entrySet()) {
+                    if (KyuubiClient.isClientOnlyConf(entry.getKey())) {
+                        continue; // client-only (e.g. retry tuning), not sent to Spark/Kyuubi
+                    }
                     System.out.println("  " + entry.getKey() + " = " + entry.getValue());
                 }
             }
             System.out.println("==========================================");
             System.out.println();
 
-            // Submit batch
-            KyuubiClient.BatchResponse response = client.submitBatch(submitArgs);
+            // Submit batch (with retry on connection-phase failures only — never duplicates a job)
+            KyuubiClient.BatchResponse response = submitWithRetry(client, submitArgs, submitRetryCfg);
             String batchId = response.getId();
 
             System.out.println("[" + timestamp() + "] Batch submitted successfully!");
@@ -741,6 +764,11 @@ public class SparkSubmit {
                 }
             }
 
+        } catch (Retry.RetryInterruptedException e) {
+            // Interrupted (Ctrl-C) during retry backoff — exit with the interrupt code.
+            System.err.println("\n[" + timestamp() + "] Interrupted.");
+            try { client.close(); } catch (IOException ex) { /* Ignore */ }
+            System.exit(130);
         } catch (Exception e) {
             System.err.println("\n❌ Error: " + e.getMessage());
             e.printStackTrace();
@@ -797,6 +825,9 @@ public class SparkSubmit {
             if (!submitArgs.getConf().isEmpty()) {
                 System.out.println("Configuration:");
                 for (Map.Entry<String, String> entry : submitArgs.getConf().entrySet()) {
+                    if (KyuubiClient.isClientOnlyConf(entry.getKey())) {
+                        continue; // client-only (e.g. retry tuning), not sent to Spark/Kyuubi
+                    }
                     System.out.println("  " + entry.getKey() + " = " + entry.getValue());
                 }
             }
@@ -1297,19 +1328,27 @@ public class SparkSubmit {
      * 2. Fallback to client-side OSS upload (requires OSS credentials in --conf)
      */
     private static String uploadSqlFile(KyuubiClient client, byte[] sqlBytes,
-                                         Map<String, String> conf, Config config) throws IOException {
+                                         Map<String, String> conf, Config config,
+                                         Retry.RetryConfig uploadRetryCfg) throws IOException {
         System.err.println("[" + timestamp() + "] SQL content is " + (sqlBytes.length / 1024) +
                 " KB (threshold: " + (SQL_UPLOAD_THRESHOLD_BYTES / 1024) + " KB), uploading...");
 
         // Strategy 1: Kyuubi server-side upload (zero client-side OSS config needed)
         try {
-            String uri = client.uploadFile(sqlBytes, "query.sql");
+            String uri = Retry.execute("kyuubiUploadFile", uploadRetryCfg,
+                    () -> client.uploadFile(sqlBytes, "query.sql"));
             System.err.println("[" + timestamp() + "] SQL uploaded via Kyuubi server: " + uri);
             return uri;
         } catch (IOException e) {
             String msg = e.getMessage();
-            boolean pluginNotAvailable = msg != null &&
-                    (msg.contains("HTTP 404") || msg.contains("HTTP 405") || msg.contains("Not Found"));
+            // 404/405 means the kyuubi-upload-plugin is not installed → fall back to OSS.
+            // Prefer the typed status code; keep the string check as a safety net.
+            boolean pluginNotAvailable =
+                    (e instanceof HttpStatusException
+                            && (((HttpStatusException) e).getStatusCode() == 404
+                                || ((HttpStatusException) e).getStatusCode() == 405))
+                    || (msg != null
+                            && (msg.contains("HTTP 404") || msg.contains("HTTP 405") || msg.contains("Not Found")));
             if (pluginNotAvailable) {
                 System.err.println("[" + timestamp() + "] Kyuubi upload plugin not available, " +
                         "trying client-side OSS upload...");
@@ -1319,7 +1358,7 @@ public class SparkSubmit {
         }
 
         // Strategy 2: Client-side OSS upload (fallback for older Kyuubi without plugin)
-        return uploadSqlToOss(sqlBytes, conf, config);
+        return uploadSqlToOss(sqlBytes, conf, config, uploadRetryCfg);
     }
 
     private static String getOssConfig(String key, Map<String, String> conf, Config config) {
@@ -1330,8 +1369,74 @@ public class SparkSubmit {
         return value;
     }
 
+    // ===== Retry configuration (client-only, namespace: spark.submit.retry.*) =====
+
+    private static int getRetryInt(String key, int def, Map<String, String> conf, Config config) {
+        String v = getOssConfig(key, conf, config);
+        if (v == null) return def;
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("[" + timestamp() + "] Invalid " + key + "=" + v + ", using default " + def);
+            return def;
+        }
+    }
+
+    private static long getRetryLong(String key, long def, Map<String, String> conf, Config config) {
+        String v = getOssConfig(key, conf, config);
+        if (v == null) return def;
+        try {
+            return Long.parseLong(v.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("[" + timestamp() + "] Invalid " + key + "=" + v + ", using default " + def);
+            return def;
+        }
+    }
+
+    private static double getRetryDouble(String key, double def, Map<String, String> conf, Config config) {
+        String v = getOssConfig(key, conf, config);
+        if (v == null) return def;
+        try {
+            return Double.parseDouble(v.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("[" + timestamp() + "] Invalid " + key + "=" + v + ", using default " + def);
+            return def;
+        }
+    }
+
+    private static boolean getRetryBool(String key, boolean def, Map<String, String> conf, Config config) {
+        String v = getOssConfig(key, conf, config);
+        if (v == null) return def;
+        return Boolean.parseBoolean(v.trim());
+    }
+
+    private static Retry.RetryConfig buildSubmitRetryConfig(Map<String, String> conf, Config config) {
+        boolean enabled = getRetryBool("spark.submit.retry.enabled", true, conf, config);
+        int maxAttempts = enabled ? getRetryInt("spark.submit.retry.maxAttempts", 3, conf, config) : 1;
+        long initial = getRetryLong("spark.submit.retry.initialBackoffMs", 1000L, conf, config);
+        long max = getRetryLong("spark.submit.retry.maxBackoffMs", 8000L, conf, config);
+        double multiplier = getRetryDouble("spark.submit.retry.multiplier", 2.0, conf, config);
+        // Submit is non-idempotent: retry ONLY connection-phase failures (never duplicates a job).
+        return new Retry.RetryConfig(maxAttempts, initial, max, multiplier, Retry::isConnectPhaseOnly);
+    }
+
+    private static Retry.RetryConfig buildUploadRetryConfig(Map<String, String> conf, Config config) {
+        boolean enabled = getRetryBool("spark.submit.retry.enabled", true, conf, config);
+        int maxAttempts = enabled ? getRetryInt("spark.submit.retry.upload.maxAttempts", 4, conf, config) : 1;
+        long initial = getRetryLong("spark.submit.retry.initialBackoffMs", 1000L, conf, config);
+        long max = getRetryLong("spark.submit.retry.maxBackoffMs", 8000L, conf, config);
+        double multiplier = getRetryDouble("spark.submit.retry.multiplier", 2.0, conf, config);
+        // Uploads are idempotent (OSS PUT) or orphan-tolerant (Kyuubi upload): retry all transient errors.
+        return new Retry.RetryConfig(maxAttempts, initial, max, multiplier, Retry::isTransientNetwork);
+    }
+
+    private static KyuubiClient.BatchResponse submitWithRetry(
+            KyuubiClient client, SparkSubmitArgs submitArgs, Retry.RetryConfig cfg) throws IOException {
+        return Retry.execute("submitBatch", cfg, () -> client.submitBatch(submitArgs));
+    }
+
     private static String uploadSqlToOss(byte[] sqlBytes, Map<String, String> conf,
-                                          Config config) throws IOException {
+                                          Config config, Retry.RetryConfig uploadRetryCfg) throws IOException {
         String accessKeyId = getOssConfig("spark.hadoop.fs.oss.accessKeyId", conf, config);
         String accessKeySecret = getOssConfig("spark.hadoop.fs.oss.accessKeySecret", conf, config);
         String endpoint = getOssConfig("spark.hadoop.fs.oss.endpoint", conf, config);
@@ -1357,17 +1462,23 @@ public class SparkSubmit {
 
         String bucket = parsed[0];
         String basePath = parsed[1];
+        // Generated once, OUTSIDE the retry loop, so retries overwrite the same key
+        // (PUT is idempotent — no orphan objects). Each retry recomputes Date/MD5/signature internally.
         String objectKey = basePath + "/spark-sql-upload/" + UUID.randomUUID().toString() + ".sql";
         String publicEndpoint = OssUploader.toPublicEndpoint(endpoint);
 
         System.out.println("[" + timestamp() + "] SQL content is " + (sqlBytes.length / 1024) +
                 " KB, uploading to OSS...");
 
+        // Disable HttpClient's built-in retries so application-level Retry is the single source.
         org.apache.http.impl.client.CloseableHttpClient httpClient =
-                org.apache.http.impl.client.HttpClients.createDefault();
+                org.apache.http.impl.client.HttpClients.custom()
+                        .setRetryHandler(new org.apache.http.impl.client.DefaultHttpRequestRetryHandler(0, false))
+                        .build();
         try {
-            String ossUrl = OssUploader.upload(httpClient, publicEndpoint, bucket, objectKey,
-                    sqlBytes, accessKeyId, accessKeySecret);
+            String ossUrl = Retry.execute("ossUpload", uploadRetryCfg,
+                    () -> OssUploader.upload(httpClient, publicEndpoint, bucket, objectKey,
+                            sqlBytes, accessKeyId, accessKeySecret));
             System.out.println("[" + timestamp() + "] SQL uploaded to: " + ossUrl);
             return ossUrl;
         } finally {
