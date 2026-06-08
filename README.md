@@ -8,6 +8,7 @@ EMR on ACK Toolkit 旨在提供与 Apache Spark 原生命令行体验兼容的�
 
 - 通过 Kyuubi Server 提交 Spark 作业（JAR/PySpark）
 - 通过 Kyuubi Server 执行 Spark SQL
+- 内置带退避的自动连接重试，提升弱网 / 内网 LB 抖动下的提交成功率（详见[使用手册](spark-submit/USER_GUIDE.md#连接重试自动)）
 
 ## 工具列表
 

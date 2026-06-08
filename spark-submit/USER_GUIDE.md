@@ -402,6 +402,52 @@ Application ID: spark-d99461f259674299bfd3faf71acb902c
 ✅ Job completed successfully!
 ```
 
+## 连接重试（自动）
+
+为应对到 Kyuubi 的瞬时网络抖动（如内网 LB/CLB 偶发的连接超时），**作业提交**与**大 SQL 文件上传**内置了带指数退避（含 full jitter）的自动重试。重试是**客户端行为**，相关配置不会下发给 Kyuubi/Spark。
+
+针对不同操作采用不同策略，兼顾**成功率**与**安全性**：
+
+| 操作 | 重试哪些失败 | 默认次数 | 说明 |
+|------|--------------|----------|------|
+| 作业提交（batch submit） | 仅"连接建立阶段"失败（连接被拒 / 连接超时 / DNS 解析失败） | 3 | 非幂等：请求一旦可能已送达就**不重试**，避免重复提交作业 |
+| 文件上传（大 SQL，>10KB） | 瞬时网络错误 + HTTP 5xx/429 | 4 | 幂等：可安全重试 |
+
+> 作业提交对**读超时、`NoHttpResponseException`、5xx/429 故意不重试**——此时请求可能已被 Kyuubi 接收，重试会造成重复作业。
+
+### 配置项
+
+所有配置均为客户端专属（前缀 `spark.submit.retry.`），可通过 `--conf` 或 `~/.spark-submit.conf` 设置：
+
+| 配置 | 默认值 | 说明 |
+|------|--------|------|
+| `spark.submit.retry.enabled` | `true` | 总开关，设为 `false` 关闭全部重试 |
+| `spark.submit.retry.maxAttempts` | `3` | 作业提交最大尝试次数 |
+| `spark.submit.retry.upload.maxAttempts` | `4` | 文件上传最大尝试次数 |
+| `spark.submit.retry.initialBackoffMs` | `1000` | 初始退避（毫秒） |
+| `spark.submit.retry.maxBackoffMs` | `8000` | 退避上限（毫秒） |
+| `spark.submit.retry.multiplier` | `2.0` | 退避倍率 |
+
+### 示例
+
+```bash
+# 调大提交重试次数、缩短初始退避
+spark-submit -f big_query.sql \
+  --conf spark.submit.retry.maxAttempts=5 \
+  --conf spark.submit.retry.initialBackoffMs=500
+
+# 关闭重试
+spark-submit -e "SELECT 1" --conf spark.submit.retry.enabled=false
+```
+
+重试触发时会在 stderr 打印进度（不影响结果输出）：
+
+```
+[2026-06-08 10:56:30] submitBatch failed (attempt 1/3): Connect to 10.24.192.117:10099 failed: connect timed out, retrying in 742ms
+```
+
+退避等待期间按 `Ctrl-C` 中断会以退出码 `130` 退出。
+
 ## 技术说明
 
 ### 缓存机制
