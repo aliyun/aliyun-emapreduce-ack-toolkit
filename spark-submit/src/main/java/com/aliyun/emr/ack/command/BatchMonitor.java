@@ -183,6 +183,15 @@ final class BatchMonitor {
                     boolean streamingWasActive = streamingActive(driverStreamer);
                     stop(driverStreamer);
 
+                    // A short-lived pod can finish before the background stream attaches, leaving
+                    // the console empty. If streaming was active but never delivered a line, pull
+                    // the now-complete driver log once so a quick job still shows its output.
+                    if (streamingWasActive
+                            && driverStreamer != null
+                            && !driverStreamer.receivedAnyLine()) {
+                        driverStreamer.drainFinalBackfill();
+                    }
+
                     // Without a live driver stream, drain any remaining submission logs.
                     if (!streamingWasActive) {
                         try {

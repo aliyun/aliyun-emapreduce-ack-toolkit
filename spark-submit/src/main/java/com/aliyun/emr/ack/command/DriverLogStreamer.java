@@ -23,6 +23,7 @@ public final class DriverLogStreamer {
     private static final long RECONNECT_BACKOFF_MS = 2000L;
     private static final int MAX_CONSECUTIVE_ERRORS = 5; // give up + fall back to submission log
     private static final long STOP_JOIN_MS = 3000L;
+    private static final int FINAL_BACKFILL_TAIL = 100_000; // effectively the whole driver log
 
     /**
      * Start streaming on a background daemon thread, or return null when disabled via {@code
@@ -92,7 +93,8 @@ public final class DriverLogStreamer {
     private volatile Runnable aborter;
     private Thread thread;
 
-    private DriverLogStreamer(KyuubiClient client, String batchId, DriverLogFilter filter) {
+    // Package-private (not private) so the backfill path can be unit-tested without a live stream.
+    DriverLogStreamer(KyuubiClient client, String batchId, DriverLogFilter filter) {
         this.client = client;
         this.batchId = batchId;
         this.filter = filter;
@@ -135,37 +137,7 @@ public final class DriverLogStreamer {
     }
 
     private void run() {
-        KyuubiClient.DriverLogHandler handler =
-                new KyuubiClient.DriverLogHandler() {
-                    @Override
-                    public void onLog(String line, long timestampMillis) {
-                        // Mark activity/progress on every received line (the stream is healthy and
-                        // the
-                        // backfill window has closed) regardless of whether the filter prints it.
-                        lastActivityMillis.set(System.currentTimeMillis());
-                        seenAnyLine.set(true);
-                        consecutiveErrors.set(0);
-                        if (!filter.shouldPrint(line)) {
-                            return;
-                        }
-                        if (headerPrinted.compareAndSet(false, true)) {
-                            System.out.println("\n=== Driver Log (streaming) ===");
-                        }
-                        System.out.println(line);
-                    }
-
-                    @Override
-                    public void onEnd(String reason) {
-                        // The connection finished; run() decides whether to reconnect from batch
-                        // status.
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        consecutiveErrors.incrementAndGet();
-                        System.err.println("[" + Console.timestamp() + "] [driver-log] " + message);
-                    }
-                };
+        KyuubiClient.DriverLogHandler handler = makeHandler("\n=== Driver Log (streaming) ===");
 
         while (running.get()) {
             KyuubiClient.DriverLogStreamResult result;
@@ -218,6 +190,70 @@ public final class DriverLogStreamer {
             if (!sleepQuietly(RECONNECT_BACKOFF_MS)) {
                 return; // interrupted
             }
+        }
+    }
+
+    /**
+     * Build the SSE handler that prints driver-log lines through the filter, emitting {@code
+     * header} the first time a line passes. Shared by the live stream and the final backfill so
+     * both honour the same filter and print-the-header-once semantics.
+     */
+    private KyuubiClient.DriverLogHandler makeHandler(String header) {
+        return new KyuubiClient.DriverLogHandler() {
+            @Override
+            public void onLog(String line, long timestampMillis) {
+                // Mark activity on every received line regardless of whether the filter prints it.
+                lastActivityMillis.set(System.currentTimeMillis());
+                seenAnyLine.set(true);
+                consecutiveErrors.set(0);
+                if (!filter.shouldPrint(line)) {
+                    return;
+                }
+                if (headerPrinted.compareAndSet(false, true)) {
+                    System.out.println(header);
+                }
+                System.out.println(line);
+            }
+
+            @Override
+            public void onEnd(String reason) {
+                // The connection finished; run() decides whether to reconnect from batch status.
+            }
+
+            @Override
+            public void onError(String message) {
+                consecutiveErrors.incrementAndGet();
+                System.err.println("[" + Console.timestamp() + "] [driver-log] " + message);
+            }
+        };
+    }
+
+    /** True once the live stream has received at least one driver log line. */
+    boolean receivedAnyLine() {
+        return seenAnyLine.get();
+    }
+
+    /**
+     * After the batch is terminal, if the live stream never received a line — a short-lived pod can
+     * finish before the background stream attaches — fetch the now-complete driver log once and
+     * print it, so even a quick job shows its driver output. No-op once any line has streamed or
+     * the stream already fell back to the submission log.
+     */
+    void drainFinalBackfill() {
+        if (seenAnyLine.get() || fallenBack) {
+            return;
+        }
+        try {
+            client.streamDriverLog(
+                    batchId,
+                    FINAL_BACKFILL_TAIL,
+                    0,
+                    false,
+                    a -> {},
+                    makeHandler("\n=== Driver Log ==="));
+        } catch (IOException e) {
+            // Best effort: the final summary still prints, and a hard streaming failure would
+            // already have fallen back to the submission log.
         }
     }
 
