@@ -12,7 +12,26 @@ permissions:
   contents: write
 
 jobs:
+  spotless:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # google-java-format requires JDK 11+ to run, even though the artifact targets Java 8.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Check Java formatting (Spotless)
+        working-directory: spark-submit
+        run: mvn -B -ntp spotless:check
+
   build:
+    needs: spotless
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
