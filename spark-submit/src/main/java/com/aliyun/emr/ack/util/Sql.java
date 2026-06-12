@@ -11,8 +11,7 @@ import java.util.List;
 
 /** Reading and splitting SQL input for the SQL run modes. */
 public final class Sql {
-    private Sql() {
-    }
+    private Sql() {}
 
     /** Read SQL content from a UTF-8 file. */
     public static String readFile(String filePath) throws IOException {
@@ -21,8 +20,9 @@ public final class Sql {
             throw new IOException("SQL file not found: " + filePath);
         }
         StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+        try (BufferedReader reader =
+                new BufferedReader(
+                        new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 sb.append(line).append("\n");

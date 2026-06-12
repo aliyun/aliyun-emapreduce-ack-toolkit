@@ -3,14 +3,13 @@ package com.aliyun.emr.ack.command;
 import com.aliyun.emr.ack.cli.*;
 import com.aliyun.emr.ack.client.*;
 import com.aliyun.emr.ack.util.*;
-
 import java.io.IOException;
 import java.util.Map;
 
 /**
  * Submits a JAR (or PySpark) application as a Kyuubi batch: validates the required arguments,
- * normalises the deploy mode to {@code cluster}, prints the submission banner, submits with retry and
- * hands off to {@link BatchMonitor}. Returns the process {@link ExitCode}.
+ * normalises the deploy mode to {@code cluster}, prints the submission banner, submits with retry
+ * and hands off to {@link BatchMonitor}. Returns the process {@link ExitCode}.
  */
 public final class JarSubmitMode {
 
@@ -19,8 +18,11 @@ public final class JarSubmitMode {
     private final KyuubiClient client;
     private final Retry.RetryConfig submitRetryCfg;
 
-    public JarSubmitMode(SparkSubmitArgs submitArgs, Config config, KyuubiClient client,
-                  Retry.RetryConfig submitRetryCfg) {
+    public JarSubmitMode(
+            SparkSubmitArgs submitArgs,
+            Config config,
+            KyuubiClient client,
+            Retry.RetryConfig submitRetryCfg) {
         this.submitArgs = submitArgs;
         this.config = config;
         this.client = client;
@@ -96,18 +98,25 @@ public final class JarSubmitMode {
         }
 
         // Submit batch (with retry on connection-phase failures only — never duplicates a job)
-        KyuubiClient.BatchResponse response = RetryConfigs.submit(client, submitArgs, submitRetryCfg);
+        KyuubiClient.BatchResponse response =
+                RetryConfigs.submit(client, submitArgs, submitRetryCfg);
         return BatchMonitor.await(client, config, submitArgs, response);
     }
 
-    /** Force cluster mode (client mode is unsupported with remote Kyuubi submission); warn if changed. */
+    /**
+     * Force cluster mode (client mode is unsupported with remote Kyuubi submission); warn if
+     * changed.
+     */
     private String normalizeDeployMode() {
         String deployMode = submitArgs.getDeployMode();
         if (deployMode != null && !deployMode.isEmpty()) {
             if ("client".equalsIgnoreCase(deployMode)) {
-                System.err.println("\n⚠️  Warning: --deploy-mode client is not supported in this environment.");
-                System.err.println("   Client mode requires the driver to run on the local machine,");
-                System.err.println("   which is not compatible with remote Kyuubi server submission.");
+                System.err.println(
+                        "\n⚠️  Warning: --deploy-mode client is not supported in this environment.");
+                System.err.println(
+                        "   Client mode requires the driver to run on the local machine,");
+                System.err.println(
+                        "   which is not compatible with remote Kyuubi server submission.");
                 System.err.println("   Deploy mode will be automatically changed to 'cluster'.\n");
             } else if (!"cluster".equalsIgnoreCase(deployMode)) {
                 System.err.println("\n⚠️  Warning: Invalid --deploy-mode value: " + deployMode);

@@ -1,21 +1,20 @@
 package com.aliyun.emr.ack.client;
 
-import org.apache.http.NoHttpResponseException;
-import org.apache.http.conn.ConnectTimeoutException;
-import org.junit.Test;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-import javax.net.ssl.SSLException;
-import javax.net.ssl.SSLHandshakeException;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
+import org.apache.http.NoHttpResponseException;
+import org.apache.http.conn.ConnectTimeoutException;
+import org.junit.Test;
 
 public class RetryTest {
 
@@ -76,15 +75,16 @@ public class RetryTest {
     @Test
     public void retryConfig_clampsIllegalValues() {
         Retry.RetryConfig c = new Retry.RetryConfig(-5, -100L, -1L, 0.5, Retry::isTransientNetwork);
-        assertEquals(1, c.maxAttempts);            // max(1, -5)
-        assertEquals(0L, c.initialBackoffMs);      // max(0, -100)
-        assertEquals(0L, c.maxBackoffMs);          // max(initial=0, -1)
-        assertEquals(1.0, c.multiplier, 1e-9);     // 0.5 -> 1.0
+        assertEquals(1, c.maxAttempts); // max(1, -5)
+        assertEquals(0L, c.initialBackoffMs); // max(0, -100)
+        assertEquals(0L, c.maxBackoffMs); // max(initial=0, -1)
+        assertEquals(1.0, c.multiplier, 1e-9); // 0.5 -> 1.0
     }
 
     @Test
     public void retryConfig_keepsValidValues() {
-        Retry.RetryConfig c = new Retry.RetryConfig(3, 1000L, 8000L, 2.0, Retry::isTransientNetwork);
+        Retry.RetryConfig c =
+                new Retry.RetryConfig(3, 1000L, 8000L, 2.0, Retry::isTransientNetwork);
         assertEquals(3, c.maxAttempts);
         assertEquals(1000L, c.initialBackoffMs);
         assertEquals(8000L, c.maxBackoffMs);
@@ -95,7 +95,8 @@ public class RetryTest {
 
     @Test
     public void backoff_isWithinFullJitterBounds() {
-        Retry.RetryConfig c = new Retry.RetryConfig(6, 1000L, 8000L, 2.0, Retry::isTransientNetwork);
+        Retry.RetryConfig c =
+                new Retry.RetryConfig(6, 1000L, 8000L, 2.0, Retry::isTransientNetwork);
         for (int attempt = 1; attempt <= 6; attempt++) {
             double expected = 1000.0 * Math.pow(2.0, attempt - 1);
             long cap = (long) Math.min(8000.0, expected);
@@ -120,13 +121,17 @@ public class RetryTest {
         // zero backoff for a fast test
         Retry.RetryConfig c = new Retry.RetryConfig(3, 0L, 0L, 1.0, Retry::isTransientNetwork);
         AtomicInteger calls = new AtomicInteger();
-        String result = Retry.execute("test", c, () -> {
-            int n = calls.incrementAndGet();
-            if (n < 3) {
-                throw new SocketTimeoutException("transient " + n);
-            }
-            return "ok";
-        });
+        String result =
+                Retry.execute(
+                        "test",
+                        c,
+                        () -> {
+                            int n = calls.incrementAndGet();
+                            if (n < 3) {
+                                throw new SocketTimeoutException("transient " + n);
+                            }
+                            return "ok";
+                        });
         assertEquals("ok", result);
         assertEquals(3, calls.get());
     }
@@ -136,10 +141,13 @@ public class RetryTest {
         Retry.RetryConfig c = new Retry.RetryConfig(3, 0L, 0L, 1.0, Retry::isTransientNetwork);
         AtomicInteger calls = new AtomicInteger();
         try {
-            Retry.execute("test", c, () -> {
-                calls.incrementAndGet();
-                throw new HttpStatusException(400, "bad request");
-            });
+            Retry.execute(
+                    "test",
+                    c,
+                    () -> {
+                        calls.incrementAndGet();
+                        throw new HttpStatusException(400, "bad request");
+                    });
             fail("expected HttpStatusException");
         } catch (HttpStatusException e) {
             assertEquals(400, e.getStatusCode());
@@ -154,10 +162,13 @@ public class RetryTest {
         Retry.RetryConfig c = new Retry.RetryConfig(3, 0L, 0L, 1.0, Retry::isTransientNetwork);
         AtomicInteger calls = new AtomicInteger();
         try {
-            Retry.execute("test", c, () -> {
-                calls.incrementAndGet();
-                throw new SocketTimeoutException("always");
-            });
+            Retry.execute(
+                    "test",
+                    c,
+                    () -> {
+                        calls.incrementAndGet();
+                        throw new SocketTimeoutException("always");
+                    });
             fail("expected SocketTimeoutException");
         } catch (IOException e) {
             assertTrue(e instanceof SocketTimeoutException);

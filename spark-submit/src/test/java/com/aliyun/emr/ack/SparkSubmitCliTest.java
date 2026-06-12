@@ -1,15 +1,16 @@
 package com.aliyun.emr.ack;
 
-import org.junit.Test;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import org.junit.Test;
+
 /**
- * Offline coverage of every {@link SparkSubmit#main(String[])} path that resolves <em>before</em> the
- * first network call: usage/help, the mutually-exclusive argument guards, regex validation and the
- * required-argument checks. None of these need a cluster, so unlike {@link SparkSubmitCliE2ETest}
- * they run on every build and form the regression net that protects the CLI surface during refactors.
+ * Offline coverage of every {@link SparkSubmit#main(String[])} path that resolves <em>before</em>
+ * the first network call: usage/help, the mutually-exclusive argument guards, regex validation and
+ * the required-argument checks. None of these need a cluster, so unlike {@link
+ * SparkSubmitCliE2ETest} they run on every build and form the regression net that protects the CLI
+ * surface during refactors.
  *
  * <p>A dummy {@code --kyuubi-url} is supplied where the path runs past config loading; it is never
  * contacted because each case exits at a validation guard first.
@@ -47,18 +48,21 @@ public class SparkSubmitCliTest {
 
     @Test
     public void statusAndKillTogether_isRejected() {
-        CliRunner.Result r = CliRunner.run("--kyuubi-url", DUMMY_URL, "--status", "a", "--kill", "b");
+        CliRunner.Result r =
+                CliRunner.run("--kyuubi-url", DUMMY_URL, "--status", "a", "--kill", "b");
         assertEquals(1, r.code);
-        assertTrue("error mentions the conflict (" + CliRunner.tail(r.err) + ")",
+        assertTrue(
+                "error mentions the conflict (" + CliRunner.tail(r.err) + ")",
                 r.err.contains("cannot be used together"));
     }
 
     @Test
     public void sqlFileAndStatementTogether_isRejected() {
-        CliRunner.Result r = CliRunner.run(
-                "--kyuubi-url", DUMMY_URL, "-f", "/tmp/q.sql", "-e", "SELECT 1");
+        CliRunner.Result r =
+                CliRunner.run("--kyuubi-url", DUMMY_URL, "-f", "/tmp/q.sql", "-e", "SELECT 1");
         assertEquals(1, r.code);
-        assertTrue("error mentions -f/-e conflict (" + CliRunner.tail(r.err) + ")",
+        assertTrue(
+                "error mentions -f/-e conflict (" + CliRunner.tail(r.err) + ")",
                 r.err.contains("-f and -e cannot be used together"));
     }
 
@@ -68,7 +72,8 @@ public class SparkSubmitCliTest {
     public void badDriverLogGrep_isRejected() {
         CliRunner.Result r = CliRunner.run("--kyuubi-url", DUMMY_URL, "--driver-log-grep", "(");
         assertEquals(1, r.code);
-        assertTrue("invalid-regex error names the flag (" + CliRunner.tail(r.err) + ")",
+        assertTrue(
+                "invalid-regex error names the flag (" + CliRunner.tail(r.err) + ")",
                 r.err.contains("Invalid regex") && r.err.contains("--driver-log-grep"));
     }
 
@@ -76,7 +81,8 @@ public class SparkSubmitCliTest {
     public void badDriverLogGrepV_isRejected() {
         CliRunner.Result r = CliRunner.run("--kyuubi-url", DUMMY_URL, "--driver-log-grep-v", "[");
         assertEquals(1, r.code);
-        assertTrue("invalid-regex error names the grep-v flag (" + CliRunner.tail(r.err) + ")",
+        assertTrue(
+                "invalid-regex error names the grep-v flag (" + CliRunner.tail(r.err) + ")",
                 r.err.contains("Invalid regex") && r.err.contains("--driver-log-grep-v"));
     }
 
@@ -84,9 +90,11 @@ public class SparkSubmitCliTest {
 
     @Test
     public void missingResource_isRejected() {
-        CliRunner.Result r = CliRunner.run("--kyuubi-url", DUMMY_URL, "--class", "com.example.Main");
+        CliRunner.Result r =
+                CliRunner.run("--kyuubi-url", DUMMY_URL, "--class", "com.example.Main");
         assertEquals(1, r.code);
-        assertTrue("error mentions the missing resource (" + CliRunner.tail(r.err) + ")",
+        assertTrue(
+                "error mentions the missing resource (" + CliRunner.tail(r.err) + ")",
                 r.err.contains("Resource") && r.err.contains("required"));
     }
 
@@ -94,7 +102,8 @@ public class SparkSubmitCliTest {
     public void missingClass_forJar_isRejected() {
         CliRunner.Result r = CliRunner.run("--kyuubi-url", DUMMY_URL, "app.jar");
         assertEquals(1, r.code);
-        assertTrue("error mentions the missing class (" + CliRunner.tail(r.err) + ")",
+        assertTrue(
+                "error mentions the missing class (" + CliRunner.tail(r.err) + ")",
                 r.err.contains("--class is required"));
     }
 }

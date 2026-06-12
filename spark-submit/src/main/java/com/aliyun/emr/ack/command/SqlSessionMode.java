@@ -3,16 +3,15 @@ package com.aliyun.emr.ack.command;
 import com.aliyun.emr.ack.cli.*;
 import com.aliyun.emr.ack.client.*;
 import com.aliyun.emr.ack.util.*;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Runs SQL ({@code -e}/{@code -f}) interactively via a Kyuubi session: creates the session, executes
- * each statement with live operation-log output and heartbeat/overall-timeout enforcement, prints the
- * result set as a table, and closes the session. Returns the process {@link ExitCode}.
+ * Runs SQL ({@code -e}/{@code -f}) interactively via a Kyuubi session: creates the session,
+ * executes each statement with live operation-log output and heartbeat/overall-timeout enforcement,
+ * prints the result set as a table, and closes the session. Returns the process {@link ExitCode}.
  */
 public final class SqlSessionMode {
 
@@ -37,7 +36,11 @@ public final class SqlSessionMode {
             String sqlContent;
             if (submitArgs.getSqlFile() != null) {
                 sqlContent = Sql.readFile(submitArgs.getSqlFile());
-                System.out.println("[" + Console.timestamp() + "] Reading SQL from file: " + submitArgs.getSqlFile());
+                System.out.println(
+                        "["
+                                + Console.timestamp()
+                                + "] Reading SQL from file: "
+                                + submitArgs.getSqlFile());
             } else {
                 sqlContent = submitArgs.getSqlStatement();
             }
@@ -61,7 +64,8 @@ public final class SqlSessionMode {
             System.out.println("SQL statements to execute: " + statements.size());
             System.out.println("Heartbeat timeout: 30 minutes");
             if (submitArgs.getTimeoutSeconds() != null) {
-                System.out.println("Overall timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
+                System.out.println(
+                        "Overall timeout: " + submitArgs.getTimeoutSeconds() + " seconds");
             }
             if (!submitArgs.getConf().isEmpty()) {
                 System.out.println("Configuration:");
@@ -84,29 +88,44 @@ public final class SqlSessionMode {
 
             // Track overall timeout
             long overallStartTimeMillis = System.currentTimeMillis();
-            Long overallTimeoutMillis = submitArgs.getTimeoutSeconds() != null
-                    ? submitArgs.getTimeoutSeconds() * 1000L : null;
+            Long overallTimeoutMillis =
+                    submitArgs.getTimeoutSeconds() != null
+                            ? submitArgs.getTimeoutSeconds() * 1000L
+                            : null;
 
             // Execute each statement
             exitCode = ExitCode.SUCCESS;
             for (int idx = 0; idx < statements.size(); idx++) {
                 String sql = statements.get(idx);
                 System.out.println("------------------------------------------");
-                System.out.println("[" + Console.timestamp() + "] [" + (idx + 1) + "/" + statements.size()
-                        + "] Executing: " + Console.truncateSql(sql, 200));
+                System.out.println(
+                        "["
+                                + Console.timestamp()
+                                + "] ["
+                                + (idx + 1)
+                                + "/"
+                                + statements.size()
+                                + "] Executing: "
+                                + Console.truncateSql(sql, 200));
                 System.out.println("------------------------------------------");
 
                 try {
-                    executeSingleStatement(sessionHandle, sql, overallTimeoutMillis, overallStartTimeMillis);
+                    executeSingleStatement(
+                            sessionHandle, sql, overallTimeoutMillis, overallStartTimeMillis);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     System.err.println("\n[" + Console.timestamp() + "] Interrupted.");
                     exitCode = ExitCode.INTERRUPTED;
                     break;
                 } catch (Exception e) {
-                    System.err.println("\n[" + Console.timestamp() + "] Error executing statement: " + e.getMessage());
+                    System.err.println(
+                            "\n["
+                                    + Console.timestamp()
+                                    + "] Error executing statement: "
+                                    + e.getMessage());
                     if (e.getMessage() != null
-                            && (e.getMessage().contains("Heartbeat timeout") || e.getMessage().contains("Overall timeout"))) {
+                            && (e.getMessage().contains("Heartbeat timeout")
+                                    || e.getMessage().contains("Overall timeout"))) {
                         exitCode = ExitCode.TIMEOUT;
                     } else {
                         exitCode = ExitCode.ERROR;
@@ -124,7 +143,10 @@ public final class SqlSessionMode {
             System.out.println("[" + Console.timestamp() + "] Session closed.");
 
             if (exitCode == ExitCode.SUCCESS) {
-                System.out.println("\n[" + Console.timestamp() + "] All SQL statements completed successfully.");
+                System.out.println(
+                        "\n["
+                                + Console.timestamp()
+                                + "] All SQL statements completed successfully.");
             }
 
             return exitCode;
@@ -138,7 +160,8 @@ public final class SqlSessionMode {
             // Best-effort close of a session left open by the error
             if (sessionHandle != null) {
                 try {
-                    System.err.println("[" + Console.timestamp() + "] Closing session due to error...");
+                    System.err.println(
+                            "[" + Console.timestamp() + "] Closing session due to error...");
                     client.closeSession(sessionHandle);
                 } catch (IOException ex) {
                     // Ignore
@@ -152,11 +175,16 @@ public final class SqlSessionMode {
      * Execute a single statement: submit async, poll for completion with live log output and
      * heartbeat/overall-timeout enforcement, then fetch and print its result set.
      */
-    private void executeSingleStatement(String sessionHandle, String sql,
-            Long overallTimeoutMillis, long overallStartTimeMillis) throws IOException, InterruptedException {
+    private void executeSingleStatement(
+            String sessionHandle,
+            String sql,
+            Long overallTimeoutMillis,
+            long overallStartTimeMillis)
+            throws IOException, InterruptedException {
         long stmtStartTime = System.currentTimeMillis();
 
-        KyuubiClient.OperationResponse opResponse = client.executeStatement(sessionHandle, sql, true);
+        KyuubiClient.OperationResponse opResponse =
+                client.executeStatement(sessionHandle, sql, true);
         String operationHandle = opResponse.getIdentifier();
         System.out.println("[" + Console.timestamp() + "] Operation submitted: " + operationHandle);
 
@@ -172,21 +200,27 @@ public final class SqlSessionMode {
             if (overallTimeoutMillis != null) {
                 long elapsed = System.currentTimeMillis() - overallStartTimeMillis;
                 if (elapsed >= overallTimeoutMillis) {
-                    System.err.println("\n[" + Console.timestamp() + "] Overall timeout after "
-                            + (overallTimeoutMillis / 1000) + " seconds. Canceling operation...");
+                    System.err.println(
+                            "\n["
+                                    + Console.timestamp()
+                                    + "] Overall timeout after "
+                                    + (overallTimeoutMillis / 1000)
+                                    + " seconds. Canceling operation...");
                     try {
                         client.updateOperation(operationHandle, "cancel");
                     } catch (IOException e) {
                         // Ignore
                     }
-                    throw new IOException("Overall timeout after " + (overallTimeoutMillis / 1000) + " seconds");
+                    throw new IOException(
+                            "Overall timeout after " + (overallTimeoutMillis / 1000) + " seconds");
                 }
             }
 
             // Fetch and print operation logs (non-fatal errors)
             boolean hasNewLogs = false;
             try {
-                KyuubiClient.LogResponse logResponse = client.getOperationLog(operationHandle, Polling.LOG_FETCH_SIZE);
+                KyuubiClient.LogResponse logResponse =
+                        client.getOperationLog(operationHandle, Polling.LOG_FETCH_SIZE);
                 if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
                     for (String line : logResponse.getLogRowSet()) {
                         System.out.println(line);
@@ -196,8 +230,10 @@ public final class SqlSessionMode {
 
                     while (logResponse.getLogRowSet() != null
                             && logResponse.getLogRowSet().size() == Polling.LOG_FETCH_SIZE) {
-                        logResponse = client.getOperationLog(operationHandle, Polling.LOG_FETCH_SIZE);
-                        if (logResponse.getLogRowSet() != null && !logResponse.getLogRowSet().isEmpty()) {
+                        logResponse =
+                                client.getOperationLog(operationHandle, Polling.LOG_FETCH_SIZE);
+                        if (logResponse.getLogRowSet() != null
+                                && !logResponse.getLogRowSet().isEmpty()) {
                             for (String line : logResponse.getLogRowSet()) {
                                 System.out.println(line);
                             }
@@ -219,11 +255,17 @@ public final class SqlSessionMode {
             } catch (IOException e) {
                 consecutiveErrors++;
                 if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                    throw new IOException("Too many consecutive errors fetching operation status: " + e.getMessage());
+                    throw new IOException(
+                            "Too many consecutive errors fetching operation status: "
+                                    + e.getMessage());
                 }
                 if (consecutiveErrors == 1) {
-                    System.err.println("[" + Console.timestamp() + "] Warning: Error fetching operation status: "
-                            + e.getMessage() + " (retrying...)");
+                    System.err.println(
+                            "["
+                                    + Console.timestamp()
+                                    + "] Warning: Error fetching operation status: "
+                                    + e.getMessage()
+                                    + " (retrying...)");
                 }
                 continue;
             }
@@ -231,7 +273,13 @@ public final class SqlSessionMode {
             String currentState = event.getState();
             if (!currentState.equals(lastState)) {
                 if (lastState != null) {
-                    System.out.println("[" + Console.timestamp() + "] [Status] " + lastState + " -> " + currentState);
+                    System.out.println(
+                            "["
+                                    + Console.timestamp()
+                                    + "] [Status] "
+                                    + lastState
+                                    + " -> "
+                                    + currentState);
                 } else {
                     System.out.println("[" + Console.timestamp() + "] [Status] " + currentState);
                 }
@@ -242,8 +290,10 @@ public final class SqlSessionMode {
             if (event.isTerminal()) {
                 // Fetch any remaining logs before reporting result
                 try {
-                    KyuubiClient.LogResponse finalLogs = client.getOperationLog(operationHandle, Polling.LOG_FETCH_SIZE);
-                    while (finalLogs.getLogRowSet() != null && !finalLogs.getLogRowSet().isEmpty()) {
+                    KyuubiClient.LogResponse finalLogs =
+                            client.getOperationLog(operationHandle, Polling.LOG_FETCH_SIZE);
+                    while (finalLogs.getLogRowSet() != null
+                            && !finalLogs.getLogRowSet().isEmpty()) {
                         for (String line : finalLogs.getLogRowSet()) {
                             System.out.println(line);
                         }
@@ -253,12 +303,16 @@ public final class SqlSessionMode {
                     // Ignore
                 }
 
-                if ("ERROR".equals(currentState) || "CANCELED".equals(currentState) || "TIMEOUT".equals(currentState)
-                        || "ERROR_STATE".equals(currentState) || "CANCELED_STATE".equals(currentState)
+                if ("ERROR".equals(currentState)
+                        || "CANCELED".equals(currentState)
+                        || "TIMEOUT".equals(currentState)
+                        || "ERROR_STATE".equals(currentState)
+                        || "CANCELED_STATE".equals(currentState)
                         || "TIMEOUT_STATE".equals(currentState)) {
                     String errorMsg = "Statement " + currentState;
                     if (event.getException() != null && !event.getException().isEmpty()) {
-                        System.err.println("\n[" + Console.timestamp() + "] === Full Exception ===");
+                        System.err.println(
+                                "\n[" + Console.timestamp() + "] === Full Exception ===");
                         System.err.println(event.getException());
                         System.err.println("=== End Exception ===\n");
                         errorMsg += ": " + Console.extractFirstLine(event.getException());
@@ -267,14 +321,21 @@ public final class SqlSessionMode {
                 }
 
                 long stmtElapsedSec = (System.currentTimeMillis() - stmtStartTime) / 1000;
-                System.out.println("[" + Console.timestamp() + "] Statement completed in " + Console.formatDuration(stmtElapsedSec));
+                System.out.println(
+                        "["
+                                + Console.timestamp()
+                                + "] Statement completed in "
+                                + Console.formatDuration(stmtElapsedSec));
                 break;
             }
 
             // Check heartbeat timeout (no activity for 30 minutes)
             long idleTimeMs = System.currentTimeMillis() - lastActivityTime;
             if (idleTimeMs >= Polling.HEARTBEAT_TIMEOUT_MS) {
-                System.err.println("\n[" + Console.timestamp() + "] Heartbeat timeout: no activity for 30 minutes. Canceling operation...");
+                System.err.println(
+                        "\n["
+                                + Console.timestamp()
+                                + "] Heartbeat timeout: no activity for 30 minutes. Canceling operation...");
                 try {
                     client.updateOperation(operationHandle, "cancel");
                 } catch (IOException e) {
@@ -288,8 +349,14 @@ public final class SqlSessionMode {
             if (timeSinceLastHeartbeatLog >= Polling.HEARTBEAT_LOG_INTERVAL_MS) {
                 if (!hasNewLogs) {
                     long idleMinutes = idleTimeMs / 60000;
-                    System.out.println("[" + Console.timestamp() + "] [Heartbeat] Still running... (state: " + currentState
-                            + ", idle: " + idleMinutes + "m, timeout: 30m)");
+                    System.out.println(
+                            "["
+                                    + Console.timestamp()
+                                    + "] [Heartbeat] Still running... (state: "
+                                    + currentState
+                                    + ", idle: "
+                                    + idleMinutes
+                                    + "m, timeout: 30m)");
                 }
                 lastHeartbeatLogTime = System.currentTimeMillis();
             }
@@ -316,7 +383,8 @@ public final class SqlSessionMode {
 
         List<List<String>> allRows = new ArrayList<>();
         while (true) {
-            KyuubiClient.RowSetResponse rowSet = client.getOperationRowSet(operationHandle, RESULT_FETCH_SIZE, "FETCH_NEXT");
+            KyuubiClient.RowSetResponse rowSet =
+                    client.getOperationRowSet(operationHandle, RESULT_FETCH_SIZE, "FETCH_NEXT");
             if (rowSet.getRows() == null || rowSet.getRows().isEmpty()) {
                 break;
             }
@@ -324,7 +392,10 @@ public final class SqlSessionMode {
                 List<String> rowValues = new ArrayList<>();
                 if (row.getFields() != null) {
                     for (KyuubiClient.Field field : row.getFields()) {
-                        rowValues.add(field.getValue() != null ? String.valueOf(field.getValue()) : "NULL");
+                        rowValues.add(
+                                field.getValue() != null
+                                        ? String.valueOf(field.getValue())
+                                        : "NULL");
                     }
                 }
                 allRows.add(rowValues);

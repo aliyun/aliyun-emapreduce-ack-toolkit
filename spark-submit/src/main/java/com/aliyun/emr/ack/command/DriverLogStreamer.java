@@ -3,7 +3,6 @@ package com.aliyun.emr.ack.command;
 import com.aliyun.emr.ack.cli.*;
 import com.aliyun.emr.ack.client.*;
 import com.aliyun.emr.ack.util.*;
-
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -13,28 +12,31 @@ import java.util.concurrent.atomic.AtomicLong;
  * Streams a batch's Spark driver pod log to stdout in the background. It opens the Kyuubi SSE
  * endpoint, prints each {@code log} event, and reconnects across transient drops or stream-side
  * timeouts (idle / max-duration) for as long as the batch is still running, so a long-lived job
- * keeps tailing. It self-terminates once the batch reaches a terminal state, and the monitoring loop
- * also calls {@link #stop()} to guarantee a prompt, ordered shutdown before the final summary.
+ * keeps tailing. It self-terminates once the batch reaches a terminal state, and the monitoring
+ * loop also calls {@link #stop()} to guarantee a prompt, ordered shutdown before the final summary.
  */
 public final class DriverLogStreamer {
 
     private static final int TAIL_LINES = 200; // initial backfill on first connect
-    private static final int RECONNECT_LOOKBACK_SECONDS = 2; // small overlap to bridge a reconnect gap
+    private static final int RECONNECT_LOOKBACK_SECONDS =
+            2; // small overlap to bridge a reconnect gap
     private static final long RECONNECT_BACKOFF_MS = 2000L;
     private static final int MAX_CONSECUTIVE_ERRORS = 5; // give up + fall back to submission log
     private static final long STOP_JOIN_MS = 3000L;
 
     /**
-     * Start streaming on a background daemon thread, or return null when disabled via
-     * {@code --no-driver-log}. The returned streamer keeps the stream open across reconnects until
-     * the batch finishes or {@link #stop()} is called.
+     * Start streaming on a background daemon thread, or return null when disabled via {@code
+     * --no-driver-log}. The returned streamer keeps the stream open across reconnects until the
+     * batch finishes or {@link #stop()} is called.
      */
-    public static DriverLogStreamer start(KyuubiClient client, SparkSubmitArgs submitArgs, String batchId) {
+    public static DriverLogStreamer start(
+            KyuubiClient client, SparkSubmitArgs submitArgs, String batchId) {
         if (!submitArgs.isDriverLogStream()) {
             return null;
         }
-        DriverLogFilter filter = DriverLogFilter.fromRegexes(
-                submitArgs.getDriverLogGrep(), submitArgs.getDriverLogGrepV());
+        DriverLogFilter filter =
+                DriverLogFilter.fromRegexes(
+                        submitArgs.getDriverLogGrep(), submitArgs.getDriverLogGrepV());
         DriverLogStreamer streamer = new DriverLogStreamer(client, batchId, filter);
         streamer.startThread();
         return streamer;
@@ -43,10 +45,9 @@ public final class DriverLogStreamer {
     /**
      * Fill driver-log settings from the config file when not given on the command line, so common
      * filters can live in ~/.spark-submit.conf. CLI flags always win. Config keys (client-only,
-     * never forwarded to Spark):
-     * {@code spark.submit.driver.log.enabled} (true/false; default true),
-     * {@code spark.submit.driver.log.grep} (whitelist regex),
-     * {@code spark.submit.driver.log.grep-v} (blacklist regex).
+     * never forwarded to Spark): {@code spark.submit.driver.log.enabled} (true/false; default
+     * true), {@code spark.submit.driver.log.grep} (whitelist regex), {@code
+     * spark.submit.driver.log.grep-v} (blacklist regex).
      */
     public static void applyConfigDefaults(SparkSubmitArgs submitArgs, Config config) {
         if (submitArgs.getDriverLogStream() == null) {
@@ -134,34 +135,37 @@ public final class DriverLogStreamer {
     }
 
     private void run() {
-        KyuubiClient.DriverLogHandler handler = new KyuubiClient.DriverLogHandler() {
-            @Override
-            public void onLog(String line, long timestampMillis) {
-                // Mark activity/progress on every received line (the stream is healthy and the
-                // backfill window has closed) regardless of whether the filter prints it.
-                lastActivityMillis.set(System.currentTimeMillis());
-                seenAnyLine.set(true);
-                consecutiveErrors.set(0);
-                if (!filter.shouldPrint(line)) {
-                    return;
-                }
-                if (headerPrinted.compareAndSet(false, true)) {
-                    System.out.println("\n=== Driver Log (streaming) ===");
-                }
-                System.out.println(line);
-            }
+        KyuubiClient.DriverLogHandler handler =
+                new KyuubiClient.DriverLogHandler() {
+                    @Override
+                    public void onLog(String line, long timestampMillis) {
+                        // Mark activity/progress on every received line (the stream is healthy and
+                        // the
+                        // backfill window has closed) regardless of whether the filter prints it.
+                        lastActivityMillis.set(System.currentTimeMillis());
+                        seenAnyLine.set(true);
+                        consecutiveErrors.set(0);
+                        if (!filter.shouldPrint(line)) {
+                            return;
+                        }
+                        if (headerPrinted.compareAndSet(false, true)) {
+                            System.out.println("\n=== Driver Log (streaming) ===");
+                        }
+                        System.out.println(line);
+                    }
 
-            @Override
-            public void onEnd(String reason) {
-                // The connection finished; run() decides whether to reconnect from batch status.
-            }
+                    @Override
+                    public void onEnd(String reason) {
+                        // The connection finished; run() decides whether to reconnect from batch
+                        // status.
+                    }
 
-            @Override
-            public void onError(String message) {
-                consecutiveErrors.incrementAndGet();
-                System.err.println("[" + Console.timestamp() + "] [driver-log] " + message);
-            }
-        };
+                    @Override
+                    public void onError(String message) {
+                        consecutiveErrors.incrementAndGet();
+                        System.err.println("[" + Console.timestamp() + "] [driver-log] " + message);
+                    }
+                };
 
         while (running.get()) {
             KyuubiClient.DriverLogStreamResult result;
@@ -174,8 +178,9 @@ public final class DriverLogStreamer {
                 int since = haveLogs ? RECONNECT_LOOKBACK_SECONDS : 0;
                 // timestamps=false: Spark log lines already carry their own timestamps, so the raw
                 // line reads most like native driver output on the console.
-                result = client.streamDriverLog(
-                        batchId, tail, since, false, a -> aborter = a, handler);
+                result =
+                        client.streamDriverLog(
+                                batchId, tail, since, false, a -> aborter = a, handler);
             } catch (IOException e) {
                 result = KyuubiClient.DriverLogStreamResult.DISCONNECTED;
             }
@@ -184,14 +189,20 @@ public final class DriverLogStreamer {
                 return;
             }
             if (result == KyuubiClient.DriverLogStreamResult.DISABLED) {
-                System.err.println("[" + Console.timestamp() + "] [driver-log] server has driver log "
-                        + "streaming disabled; falling back to the Kyuubi submission log.");
+                System.err.println(
+                        "["
+                                + Console.timestamp()
+                                + "] [driver-log] server has driver log "
+                                + "streaming disabled; falling back to the Kyuubi submission log.");
                 fallenBack = true;
                 return;
             }
             if (consecutiveErrors.get() >= MAX_CONSECUTIVE_ERRORS) {
-                System.err.println("[" + Console.timestamp() + "] [driver-log] giving up after repeated "
-                        + "errors; falling back to the Kyuubi submission log.");
+                System.err.println(
+                        "["
+                                + Console.timestamp()
+                                + "] [driver-log] giving up after repeated "
+                                + "errors; falling back to the Kyuubi submission log.");
                 fallenBack = true;
                 return;
             }

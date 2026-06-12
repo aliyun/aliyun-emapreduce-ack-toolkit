@@ -14,14 +14,15 @@ import java.util.function.Function;
  * semantics exactly: unknown options are tolerated silently, every token after the resource jar is
  * passed through verbatim as an application argument, {@code --conf k=v} is repeatable and the
  * list-valued options are comma-separated. Rather than a long {@code if/else} chain, the recognised
- * options live in two declarative tables — {@link #VALUE_OPTS} (consume the next token) and
- * {@link #FLAG_OPTS} (no value) — so adding an option is a single table entry. Handlers mutate the
+ * options live in two declarative tables — {@link #VALUE_OPTS} (consume the next token) and {@link
+ * #FLAG_OPTS} (no value) — so adding an option is a single table entry. Handlers mutate the
  * result's already-initialised collections directly.
  */
 public class SparkSubmitParser {
 
     /** Options that consume the following token; the handler applies it to the parsed result. */
-    private static final Map<String, BiConsumer<SparkSubmitArgs, String>> VALUE_OPTS = new HashMap<>();
+    private static final Map<String, BiConsumer<SparkSubmitArgs, String>> VALUE_OPTS =
+            new HashMap<>();
 
     /** Boolean flags that take no value. */
     private static final Map<String, Consumer<SparkSubmitArgs>> FLAG_OPTS = new HashMap<>();
@@ -56,14 +57,18 @@ public class SparkSubmitParser {
         VALUE_OPTS.put("--total-executor-cores", conf("spark.cores.max"));
 
         // value -> a field AND a conf key
-        VALUE_OPTS.put("--driver-cores", (a, v) -> {
-            a.setDriverCores(v);
-            a.getConf().put("spark.driver.cores", v);
-        });
-        VALUE_OPTS.put("--queue", (a, v) -> {
-            a.setQueue(v);
-            a.getConf().put("spark.yarn.queue", v);
-        });
+        VALUE_OPTS.put(
+                "--driver-cores",
+                (a, v) -> {
+                    a.setDriverCores(v);
+                    a.getConf().put("spark.driver.cores", v);
+                });
+        VALUE_OPTS.put(
+                "--queue",
+                (a, v) -> {
+                    a.setQueue(v);
+                    a.getConf().put("spark.yarn.queue", v);
+                });
 
         // comma-separated lists
         VALUE_OPTS.put("--jars", csv(SparkSubmitArgs::getJars));
@@ -77,7 +82,7 @@ public class SparkSubmitParser {
         VALUE_OPTS.put("--conf", SparkSubmitParser::putConf);
         VALUE_OPTS.put("--timeout", SparkSubmitParser::parseTimeout);
         // accepted for spark-submit compatibility; the file itself is not consumed yet
-        VALUE_OPTS.put("--properties-file", (a, v) -> { });
+        VALUE_OPTS.put("--properties-file", (a, v) -> {});
 
         // boolean flags
         FLAG_OPTS.put("--session", a -> a.setSqlSessionMode(true));
@@ -131,7 +136,8 @@ public class SparkSubmitParser {
     }
 
     /** A handler that splits a comma-separated value into the given list. */
-    private static BiConsumer<SparkSubmitArgs, String> csv(Function<SparkSubmitArgs, List<String>> listOf) {
+    private static BiConsumer<SparkSubmitArgs, String> csv(
+            Function<SparkSubmitArgs, List<String>> listOf) {
         return (a, v) -> {
             for (String part : v.split(",")) {
                 String trimmed = part.trim();
@@ -161,7 +167,9 @@ public class SparkSubmitParser {
 
     /** Whether a bare positional token is the application resource (jar/python file). */
     private static boolean isResource(String arg) {
-        return arg.endsWith(".jar") || arg.endsWith(".py")
-                || arg.startsWith("local://") || arg.startsWith("oss://");
+        return arg.endsWith(".jar")
+                || arg.endsWith(".py")
+                || arg.startsWith("local://")
+                || arg.startsWith("oss://");
     }
 }

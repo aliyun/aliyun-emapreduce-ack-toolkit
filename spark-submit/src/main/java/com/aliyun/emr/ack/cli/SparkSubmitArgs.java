@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import lombok.Getter;
 import lombok.Setter;
 
@@ -36,20 +35,25 @@ public class SparkSubmitArgs {
     private List<String> repositories = new ArrayList<>();
     private String driverCores;
     private String deployMode;
-    private String sqlFile;        // -f: SQL file path
-    private String sqlStatement;   // -e: SQL statement string
-    private Long timeoutSeconds;   // --timeout: job timeout in seconds
-    private boolean sqlSessionMode;  // --session: use session mode for SQL (-e/-f) instead of default batch mode
-    private Boolean driverLogStream;         // stream the live Spark driver pod log to the console; null = unset (default on), set by --driver-log/--no-driver-log or config
-    private String driverLogGrep;            // --driver-log-grep: only print driver log lines matching this regex
-    private String driverLogGrepV;           // --driver-log-grep-v: drop driver log lines matching this regex
+    private String sqlFile; // -f: SQL file path
+    private String sqlStatement; // -e: SQL statement string
+    private Long timeoutSeconds; // --timeout: job timeout in seconds
+    private boolean
+            sqlSessionMode; // --session: use session mode for SQL (-e/-f) instead of default batch
+    // mode
+    private Boolean
+            driverLogStream; // stream the live Spark driver pod log to the console; null = unset
+    // (default on), set by --driver-log/--no-driver-log or config
+    private String
+            driverLogGrep; // --driver-log-grep: only print driver log lines matching this regex
+    private String driverLogGrepV; // --driver-log-grep-v: drop driver log lines matching this regex
 
     // Kyuubi connection configuration (command-line override)
-    private String kyuubiUrl;      // --kyuubi-url: Kyuubi server URL
-    private String kyuubiUser;     // --kyuubi-user: Kyuubi username
+    private String kyuubiUrl; // --kyuubi-url: Kyuubi server URL
+    private String kyuubiUser; // --kyuubi-user: Kyuubi username
     private String kyuubiPassword; // --kyuubi-password: Kyuubi password
     private String sparkHistoryUrl; // --history-url: Spark History Server URL
-    private String configFile;     // --config-file: custom config file path
+    private String configFile; // --config-file: custom config file path
 
     /** Resolved flag: defaults to on when neither the CLI nor the config file set it. */
     public boolean isDriverLogStream() {

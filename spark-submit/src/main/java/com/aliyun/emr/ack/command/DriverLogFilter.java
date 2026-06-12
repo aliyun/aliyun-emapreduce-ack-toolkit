@@ -3,7 +3,6 @@ package com.aliyun.emr.ack.command;
 import com.aliyun.emr.ack.cli.*;
 import com.aliyun.emr.ack.client.*;
 import com.aliyun.emr.ack.util.*;
-
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -12,8 +11,8 @@ import java.util.regex.PatternSyntaxException;
  * {@code include} pattern (or there is none) AND does not match the {@code exclude} pattern.
  * Matching is substring ({@link java.util.regex.Matcher#find()}) semantics, like grep.
  *
- * <p>Driven by {@code --driver-log-grep} / {@code --driver-log-grep-v} (or their
- * {@code spark.submit.driver.log.grep[-v]} config-file equivalents).
+ * <p>Driven by {@code --driver-log-grep} / {@code --driver-log-grep-v} (or their {@code
+ * spark.submit.driver.log.grep[-v]} config-file equivalents).
  */
 public final class DriverLogFilter {
 
@@ -32,7 +31,7 @@ public final class DriverLogFilter {
      * Build a filter from raw regex strings; null or empty means "no pattern".
      *
      * @throws IllegalArgumentException if either regex is invalid, with a message naming the
-     *         offending option so the caller can surface it before submitting a job
+     *     offending option so the caller can surface it before submitting a job
      */
     public static DriverLogFilter fromRegexes(String includeRegex, String excludeRegex) {
         return new DriverLogFilter(

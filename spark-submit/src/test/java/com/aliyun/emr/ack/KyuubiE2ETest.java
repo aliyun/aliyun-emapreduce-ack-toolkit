@@ -1,41 +1,43 @@
 package com.aliyun.emr.ack;
 
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeNotNull;
+
 import com.aliyun.emr.ack.cli.SparkSubmitArgs;
 import com.aliyun.emr.ack.client.Config;
 import com.aliyun.emr.ack.client.KyuubiClient;
 import com.aliyun.emr.ack.command.DriverLogFilter;
-
-import org.junit.Before;
-import org.junit.Test;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeNotNull;
+import org.junit.Before;
+import org.junit.Test;
 
 /**
  * End-to-end tests against a real Kyuubi server with Spark-on-Kubernetes. They cover every client
  * link delivered to customers:
+ *
  * <ul>
- *   <li>batch submit -&gt; status poll -&gt; driver-log SSE stream -&gt; client-side filter -&gt; FINISHED;</li>
- *   <li>SQL session -&gt; execute statement -&gt; operation log/event -&gt; result-set metadata + rows -&gt; close;</li>
- *   <li>status query, local (submission) log, and kill of a running batch.</li>
+ *   <li>batch submit -&gt; status poll -&gt; driver-log SSE stream -&gt; client-side filter -&gt;
+ *       FINISHED;
+ *   <li>SQL session -&gt; execute statement -&gt; operation log/event -&gt; result-set metadata +
+ *       rows -&gt; close;
+ *   <li>status query, local (submission) log, and kill of a running batch.
  * </ul>
  *
  * <p>Opt-in: every test is skipped unless {@code KYUUBI_E2E_URL} is set, so the offline build stays
  * green. Run against zhigang-ack (with JaCoCo coverage) via:
+ *
  * <pre>
  *   KYUUBI_E2E_URL=http://47.239.194.145:10099 KYUUBI_E2E_USER=e2e \
  *     mvn test -Dtest=KyuubiE2ETest    # report at target/site/jacoco/index.html
  * </pre>
- * Optional overrides: {@code KYUUBI_E2E_IMAGE}, {@code KYUUBI_E2E_NAMESPACE}, {@code KYUUBI_E2E_SA},
- * {@code KYUUBI_E2E_JAR}.
+ *
+ * Optional overrides: {@code KYUUBI_E2E_IMAGE}, {@code KYUUBI_E2E_NAMESPACE}, {@code
+ * KYUUBI_E2E_SA}, {@code KYUUBI_E2E_JAR}.
  */
 public class KyuubiE2ETest {
 
@@ -68,22 +70,29 @@ public class KyuubiE2ETest {
         assertNotNull("batch id", batchId);
 
         CollectingHandler handler = streamToEnd(batchId, 6 * 60 * 1000L);
-        assertTrue("expected many driver log lines, got " + handler.lines.size(),
+        assertTrue(
+                "expected many driver log lines, got " + handler.lines.size(),
                 handler.lines.size() > 50);
         assertNotNull("expected a stream 'end' event", handler.endReason);
-        assertTrue("driver log should contain the Pi result",
+        assertTrue(
+                "driver log should contain the Pi result",
                 handler.lines.stream().anyMatch(l -> l.contains("Pi is roughly")));
 
         KyuubiClient.BatchResponse finalState = awaitTerminal(batchId, 60 * 1000L);
-        assertTrue("expected FINISHED, was " + finalState.getState(),
+        assertTrue(
+                "expected FINISHED, was " + finalState.getState(),
                 "FINISHED".equals(finalState.getState()));
 
         DriverLogFilter filter = DriverLogFilter.fromRegexes(null, "TaskSetManager");
         long kept = handler.lines.stream().filter(filter::shouldPrint).count();
-        assertTrue("filter should drop some real lines (" + kept + "/" + handler.lines.size() + ")",
+        assertTrue(
+                "filter should drop some real lines (" + kept + "/" + handler.lines.size() + ")",
                 kept < handler.lines.size());
-        assertTrue("no kept line should contain the excluded pattern",
-                handler.lines.stream().filter(filter::shouldPrint).noneMatch(l -> l.contains("TaskSetManager")));
+        assertTrue(
+                "no kept line should contain the excluded pattern",
+                handler.lines.stream()
+                        .filter(filter::shouldPrint)
+                        .noneMatch(l -> l.contains("TaskSetManager")));
     }
 
     // ---- Link 2: SQL session -> statement -> log/event/metadata/rows -> close ----
@@ -100,7 +109,8 @@ public class KyuubiE2ETest {
             assertNotNull("operation handle", opHandle);
 
             KyuubiClient.OperationEvent event = awaitOperationTerminal(opHandle, 5 * 60 * 1000L);
-            assertTrue("operation should reach a terminal state, was " + event.getState(),
+            assertTrue(
+                    "operation should reach a terminal state, was " + event.getState(),
                     event.isTerminal());
 
             client.getOperationLog(opHandle, 50); // exercise the operation-log link
@@ -109,7 +119,8 @@ public class KyuubiE2ETest {
             assertNotNull("result columns", md.getColumns());
             assertTrue("expected >= 2 columns", md.getColumns().size() >= 2);
 
-            KyuubiClient.RowSetResponse rows = client.getOperationRowSet(opHandle, 100, "FETCH_NEXT");
+            KyuubiClient.RowSetResponse rows =
+                    client.getOperationRowSet(opHandle, 100, "FETCH_NEXT");
             assertNotNull("rows", rows.getRows());
             assertTrue("expected at least one row", rows.getRows().size() >= 1);
 
@@ -135,7 +146,8 @@ public class KyuubiE2ETest {
 
         client.killBatch(batchId);
         KyuubiClient.BatchResponse terminal = awaitTerminal(batchId, 90 * 1000L);
-        assertTrue("expected a terminal state after kill, was " + terminal.getState(),
+        assertTrue(
+                "expected a terminal state after kill, was " + terminal.getState(),
                 terminal.isFinished());
     }
 
@@ -146,8 +158,10 @@ public class KyuubiE2ETest {
         args.setBatchType("SPARK");
         args.setName("e2e-" + slices);
         args.setClassName("org.apache.spark.examples.SparkPi");
-        args.setResource(env("KYUUBI_E2E_JAR",
-                "local:///opt/spark/examples/jars/spark-examples_2.12-3.5.7.jar"));
+        args.setResource(
+                env(
+                        "KYUUBI_E2E_JAR",
+                        "local:///opt/spark/examples/jars/spark-examples_2.12-3.5.7.jar"));
         args.setArgs(Collections.singletonList(slices));
         args.getConf().putAll(k8sConf());
         args.getConf().put("spark.submit.deployMode", "cluster");
@@ -170,7 +184,9 @@ public class KyuubiE2ETest {
         Map<String, String> c = new HashMap<>();
         c.put("spark.master", "k8s://https://kubernetes.default.svc");
         c.put("spark.kubernetes.container.image", env("KYUUBI_E2E_IMAGE", "apache/spark:3.5.7"));
-        c.put("spark.kubernetes.authenticate.driver.serviceAccountName", env("KYUUBI_E2E_SA", "kyuubi"));
+        c.put(
+                "spark.kubernetes.authenticate.driver.serviceAccountName",
+                env("KYUUBI_E2E_SA", "kyuubi"));
         c.put("spark.kubernetes.namespace", env("KYUUBI_E2E_NAMESPACE", "kyuubi"));
         return c;
     }
@@ -184,7 +200,7 @@ public class KyuubiE2ETest {
             int since = firstConnect ? 0 : 2;
             firstConnect = false;
             KyuubiClient.DriverLogStreamResult result =
-                    client.streamDriverLog(batchId, tail, since, false, a -> { }, handler);
+                    client.streamDriverLog(batchId, tail, since, false, a -> {}, handler);
             if (result == KyuubiClient.DriverLogStreamResult.ENDED) {
                 return handler;
             }
@@ -199,7 +215,8 @@ public class KyuubiE2ETest {
         return handler;
     }
 
-    private KyuubiClient.BatchResponse awaitTerminal(String batchId, long budgetMillis) throws Exception {
+    private KyuubiClient.BatchResponse awaitTerminal(String batchId, long budgetMillis)
+            throws Exception {
         long deadline = System.currentTimeMillis() + budgetMillis;
         KyuubiClient.BatchResponse last = client.getBatch(batchId);
         while (!last.isFinished() && System.currentTimeMillis() < deadline) {
@@ -213,7 +230,8 @@ public class KyuubiE2ETest {
             throws Exception {
         long deadline = System.currentTimeMillis() + budgetMillis;
         KyuubiClient.BatchResponse last = client.getBatch(batchId);
-        while (!state.equals(last.getState()) && !last.isFinished()
+        while (!state.equals(last.getState())
+                && !last.isFinished()
                 && System.currentTimeMillis() < deadline) {
             Thread.sleep(2000);
             last = client.getBatch(batchId);

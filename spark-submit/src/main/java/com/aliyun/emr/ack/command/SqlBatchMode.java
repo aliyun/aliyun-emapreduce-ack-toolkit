@@ -3,7 +3,6 @@ package com.aliyun.emr.ack.command;
 import com.aliyun.emr.ack.cli.*;
 import com.aliyun.emr.ack.client.*;
 import com.aliyun.emr.ack.util.*;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -11,9 +10,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Runs SQL ({@code -e}/{@code -f}) as a Spark batch job via {@code SparkSQLCLIDriver} in cluster mode.
- * SQL over the upload threshold is staged out of the pod spec (see {@link SqlUploader}) and passed as
- * {@code -f <url>}. Returns the process {@link ExitCode}.
+ * Runs SQL ({@code -e}/{@code -f}) as a Spark batch job via {@code SparkSQLCLIDriver} in cluster
+ * mode. SQL over the upload threshold is staged out of the pod spec (see {@link SqlUploader}) and
+ * passed as {@code -f <url>}. Returns the process {@link ExitCode}.
  */
 public final class SqlBatchMode {
 
@@ -23,8 +22,12 @@ public final class SqlBatchMode {
     private final Retry.RetryConfig submitRetryCfg;
     private final Retry.RetryConfig uploadRetryCfg;
 
-    public SqlBatchMode(SparkSubmitArgs submitArgs, Config config, KyuubiClient client,
-                 Retry.RetryConfig submitRetryCfg, Retry.RetryConfig uploadRetryCfg) {
+    public SqlBatchMode(
+            SparkSubmitArgs submitArgs,
+            Config config,
+            KyuubiClient client,
+            Retry.RetryConfig submitRetryCfg,
+            Retry.RetryConfig uploadRetryCfg) {
         this.submitArgs = submitArgs;
         this.config = config;
         this.client = client;
@@ -44,7 +47,11 @@ public final class SqlBatchMode {
         String resolvedSqlContent;
         String displaySqlSource;
         if (submitArgs.getSqlFile() != null) {
-            System.out.println("[" + Console.timestamp() + "] [Batch] Reading SQL file locally: " + submitArgs.getSqlFile());
+            System.out.println(
+                    "["
+                            + Console.timestamp()
+                            + "] [Batch] Reading SQL file locally: "
+                            + submitArgs.getSqlFile());
             resolvedSqlContent = Sql.readFile(submitArgs.getSqlFile());
             displaySqlSource = "SQL File (read locally): " + submitArgs.getSqlFile();
         } else {
@@ -62,10 +69,13 @@ public final class SqlBatchMode {
         List<String> sqlArgs = new ArrayList<>();
         byte[] sqlBytes = resolvedSqlContent.getBytes(StandardCharsets.UTF_8);
         if (sqlBytes.length > SqlUploader.THRESHOLD_BYTES) {
-            String remoteUrl = SqlUploader.upload(client, sqlBytes, submitArgs.getConf(), config, uploadRetryCfg);
+            String remoteUrl =
+                    SqlUploader.upload(
+                            client, sqlBytes, submitArgs.getConf(), config, uploadRetryCfg);
             sqlArgs.add("-f");
             sqlArgs.add(remoteUrl);
-            displaySqlSource = "SQL File (uploaded): " + remoteUrl + " (" + (sqlBytes.length / 1024) + " KB)";
+            displaySqlSource =
+                    "SQL File (uploaded): " + remoteUrl + " (" + (sqlBytes.length / 1024) + " KB)";
         } else {
             sqlArgs.add("-e");
             sqlArgs.add(resolvedSqlContent);
@@ -95,7 +105,8 @@ public final class SqlBatchMode {
         System.out.println();
 
         // Submit batch (with retry on connection-phase failures only — never duplicates a job)
-        KyuubiClient.BatchResponse response = RetryConfigs.submit(client, submitArgs, submitRetryCfg);
+        KyuubiClient.BatchResponse response =
+                RetryConfigs.submit(client, submitArgs, submitRetryCfg);
         return BatchMonitor.await(client, config, submitArgs, response);
     }
 }

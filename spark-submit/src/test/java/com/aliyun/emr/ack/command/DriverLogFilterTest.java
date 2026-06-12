@@ -1,20 +1,18 @@
 package com.aliyun.emr.ack.command;
 
-import org.junit.Test;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import org.junit.Test;
+
 public class DriverLogFilterTest {
 
     private static final String TASK_LINE =
             "26/06/12 03:20:02 INFO TaskSetManager: Finished task 1.0 in stage 0.0";
-    private static final String WARN_LINE =
-            "26/06/12 03:20:02 WARN SparkContext: something odd";
-    private static final String INFO_LINE =
-            "26/06/12 03:20:02 INFO DAGScheduler: Job 0 finished";
+    private static final String WARN_LINE = "26/06/12 03:20:02 WARN SparkContext: something odd";
+    private static final String INFO_LINE = "26/06/12 03:20:02 INFO DAGScheduler: Job 0 finished";
 
     @Test
     public void allowAll_keepsEveryLine() {
@@ -50,9 +48,9 @@ public class DriverLogFilterTest {
     public void includeThenExclude_bothApply() {
         // keep INFO lines, but still drop the per-task spam
         DriverLogFilter f = DriverLogFilter.fromRegexes("INFO", "TaskSetManager");
-        assertTrue(f.shouldPrint(INFO_LINE));   // INFO and not TaskSetManager
-        assertFalse(f.shouldPrint(TASK_LINE));  // INFO but excluded
-        assertFalse(f.shouldPrint(WARN_LINE));  // not INFO
+        assertTrue(f.shouldPrint(INFO_LINE)); // INFO and not TaskSetManager
+        assertFalse(f.shouldPrint(TASK_LINE)); // INFO but excluded
+        assertFalse(f.shouldPrint(WARN_LINE)); // not INFO
     }
 
     @Test

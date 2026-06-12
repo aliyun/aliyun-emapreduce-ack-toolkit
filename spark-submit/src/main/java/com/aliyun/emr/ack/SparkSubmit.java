@@ -4,19 +4,20 @@ import com.aliyun.emr.ack.cli.*;
 import com.aliyun.emr.ack.client.*;
 import com.aliyun.emr.ack.command.*;
 import com.aliyun.emr.ack.util.*;
-
 import java.io.IOException;
 
 /**
  * CLI entry point. Parses arguments, loads and validates configuration, then dispatches to the
- * matching command/run mode and exits with its code. Each run mode ({@link JarSubmitMode},
- * {@link SqlBatchMode}, {@link SqlSessionMode}) owns its own submission, monitoring and reporting and
- * returns an {@link ExitCode}; this class performs the single {@code System.exit} and client cleanup.
+ * matching command/run mode and exits with its code. Each run mode ({@link JarSubmitMode}, {@link
+ * SqlBatchMode}, {@link SqlSessionMode}) owns its own submission, monitoring and reporting and
+ * returns an {@link ExitCode}; this class performs the single {@code System.exit} and client
+ * cleanup.
  */
 public class SparkSubmit {
 
     public static void main(String[] args) {
-        if (args.length == 0 || (args.length == 1 && ("--help".equals(args[0]) || "-h".equals(args[0])))) {
+        if (args.length == 0
+                || (args.length == 1 && ("--help".equals(args[0]) || "-h".equals(args[0])))) {
             Usage.print();
             System.exit(ExitCode.SUCCESS);
         }
@@ -32,13 +33,17 @@ public class SparkSubmit {
                 System.exit(ExitCode.ERROR);
             }
 
-            // Load configuration, apply command-line overrides (highest priority) and warn if default
-            Config config = submitArgs.getConfigFile() != null
-                    ? new Config(submitArgs.getConfigFile()) : new Config();
+            // Load configuration, apply command-line overrides (highest priority) and warn if
+            // default
+            Config config =
+                    submitArgs.getConfigFile() != null
+                            ? new Config(submitArgs.getConfigFile())
+                            : new Config();
             config.applyOverrides(submitArgs);
             config.validateAndPrintWarning();
 
-            // Backfill driver-log defaults from the config file (CLI flags win), then fail fast on a
+            // Backfill driver-log defaults from the config file (CLI flags win), then fail fast on
+            // a
             // bad filter regex before anything is submitted.
             DriverLogStreamer.applyConfigDefaults(submitArgs, config);
             try {
@@ -56,17 +61,26 @@ public class SparkSubmit {
                 exitCode = runKill(client, submitArgs);
             } else {
                 // Client-only retry policies; filtered out before sending to Kyuubi/Spark.
-                Retry.RetryConfig submitRetryCfg = RetryConfigs.forSubmit(submitArgs.getConf(), config);
-                Retry.RetryConfig uploadRetryCfg = RetryConfigs.forUpload(submitArgs.getConf(), config);
+                Retry.RetryConfig submitRetryCfg =
+                        RetryConfigs.forSubmit(submitArgs.getConf(), config);
+                Retry.RetryConfig uploadRetryCfg =
+                        RetryConfigs.forUpload(submitArgs.getConf(), config);
 
                 if (submitArgs.isSqlMode()) {
                     if (submitArgs.getSqlFile() != null && submitArgs.getSqlStatement() != null) {
                         System.err.println("Error: -f and -e cannot be used together");
                         System.exit(ExitCode.ERROR);
                     }
-                    exitCode = submitArgs.isSqlBatchMode()
-                            ? new SqlBatchMode(submitArgs, config, client, submitRetryCfg, uploadRetryCfg).run()
-                            : new SqlSessionMode(submitArgs, config, client).run();
+                    exitCode =
+                            submitArgs.isSqlBatchMode()
+                                    ? new SqlBatchMode(
+                                                    submitArgs,
+                                                    config,
+                                                    client,
+                                                    submitRetryCfg,
+                                                    uploadRetryCfg)
+                                            .run()
+                                    : new SqlSessionMode(submitArgs, config, client).run();
                 } else {
                     exitCode = new JarSubmitMode(submitArgs, config, client, submitRetryCfg).run();
                 }
@@ -97,7 +111,8 @@ public class SparkSubmit {
         System.exit(exitCode);
     }
 
-    private static int runStatus(KyuubiClient client, Config config, SparkSubmitArgs submitArgs) throws IOException {
+    private static int runStatus(KyuubiClient client, Config config, SparkSubmitArgs submitArgs)
+            throws IOException {
         KyuubiClient.BatchResponse status = client.getBatch(submitArgs.getStatusBatchId());
         System.out.println("Batch ID: " + status.getId());
         System.out.println("State: " + status.getState());
@@ -109,7 +124,8 @@ public class SparkSubmit {
         if (sparkUi != null && !sparkUi.isEmpty()) {
             System.out.println("Spark UI: " + sparkUi);
         }
-        String appUrl = AppUrls.applicationUrl(config.getSparkHistoryServerUrl(), status.getAppId());
+        String appUrl =
+                AppUrls.applicationUrl(config.getSparkHistoryServerUrl(), status.getAppId());
         if (appUrl != null && !appUrl.isEmpty()) {
             System.out.println("Application URL: " + appUrl);
         }

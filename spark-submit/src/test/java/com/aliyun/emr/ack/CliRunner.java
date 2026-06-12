@@ -10,17 +10,17 @@ import java.security.Permission;
  * Drives {@link SparkSubmit#main(String[])} in-process and captures its exit code, stdout and
  * stderr so the CLI orchestration can be asserted on.
  *
- * <p>{@code main()} terminates via {@code System.exit}. A {@link SecurityManager} converts that into
- * a catchable {@link ExitInvoked}, which extends {@link Error} so the broad {@code catch (Exception)}
- * blocks inside {@code main()} never swallow it. Java 11 (the project runtime) supports this.
+ * <p>{@code main()} terminates via {@code System.exit}. A {@link SecurityManager} converts that
+ * into a catchable {@link ExitInvoked}, which extends {@link Error} so the broad {@code catch
+ * (Exception)} blocks inside {@code main()} never swallow it. Java 11 (the project runtime)
+ * supports this.
  *
  * <p>Shared by the offline validation tests ({@link SparkSubmitCliTest}, no cluster) and the
  * cluster-backed {@link SparkSubmitCliE2ETest}.
  */
 final class CliRunner {
 
-    private CliRunner() {
-    }
+    private CliRunner() {}
 
     /** Run {@code SparkSubmit.main(args)} with stdout/stderr/exit captured. */
     static Result run(String... args) {
@@ -81,7 +81,10 @@ final class CliRunner {
         }
     }
 
-    /** Thrown in place of a real {@code System.exit}; extends Error so {@code catch (Exception)} ignores it. */
+    /**
+     * Thrown in place of a real {@code System.exit}; extends Error so {@code catch (Exception)}
+     * ignores it.
+     */
     private static final class ExitInvoked extends Error {
         final int status;
 

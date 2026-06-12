@@ -1,22 +1,20 @@
 package com.aliyun.emr.ack;
 
-import com.aliyun.emr.ack.cli.SparkSubmitArgs;
-import com.aliyun.emr.ack.client.Config;
-import com.aliyun.emr.ack.client.KyuubiClient;
-
-import com.aliyun.emr.ack.CliRunner.Result;
-import org.junit.Before;
-import org.junit.Test;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeNotNull;
+
+import com.aliyun.emr.ack.CliRunner.Result;
+import com.aliyun.emr.ack.cli.SparkSubmitArgs;
+import com.aliyun.emr.ack.client.Config;
+import com.aliyun.emr.ack.client.KyuubiClient;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import org.junit.Before;
+import org.junit.Test;
 
 /**
  * End-to-end coverage of the full CLI orchestration. Unlike {@link KyuubiE2ETest} (which drives the
@@ -25,8 +23,8 @@ import static org.junit.Assume.assumeNotNull;
  * three run modes, the console reporting, and the {@code --status}/{@code --kill} paths execute and
  * are measured by JaCoCo — the half of the codebase that {@code System.exit} otherwise hides.
  *
- * <p>The in-process {@code main()} invocation and its {@code System.exit} trap live in
- * {@link CliRunner}.
+ * <p>The in-process {@code main()} invocation and its {@code System.exit} trap live in {@link
+ * CliRunner}.
  *
  * <p>Opt-in: skipped unless {@code KYUUBI_E2E_URL} is set.
  */
@@ -107,6 +105,37 @@ public class SparkSubmitCliE2ETest {
         assertTrue("result table footer", r.out.contains("row(s) in set"));
     }
 
+    @Test
+    public void sqlSessionMode_runsMultipleStatements() {
+        List<String> args = baseArgs("e2e-cli-sql-session-multi");
+        args.add("-e");
+        args.add("SELECT 1 AS first_col; SELECT 2 AS second_col");
+        args.add("--session");
+        Result r = run(args);
+        assertEquals("exit code (stderr=" + tail(r.err) + ")", 0, r.code);
+        assertTrue("first statement ran", r.out.contains("[1/2]"));
+        assertTrue("second statement ran", r.out.contains("[2/2]"));
+        assertTrue("success summary", r.out.contains("All SQL statements completed successfully"));
+        assertTrue("result tables", countOccurrences(r.out, "row(s) in set") >= 2);
+    }
+
+    @Test
+    public void sqlSessionMode_badSqlExits1AndClosesSession() {
+        List<String> args = baseArgs("e2e-cli-sql-session-fail");
+        args.add("-e");
+        args.add("SELECT * FROM table_that_should_not_exist_for_e2e");
+        args.add("--session");
+        Result r = run(args);
+        assertEquals("exit code (stderr=" + tail(r.err) + ")", 1, r.code);
+        assertTrue(
+                "reported statement error",
+                r.err.contains("Error executing statement")
+                        || r.err.contains("TABLE_OR_VIEW_NOT_FOUND"));
+        assertTrue(
+                "attempted session close",
+                r.out.contains("Closing session:") || r.err.contains("Closing session"));
+    }
+
     // ---- SQL batch mode: executeSqlBatchMode (the second monitor loop) ----
 
     @Test
@@ -120,7 +149,8 @@ public class SparkSubmitCliE2ETest {
         // process must terminate cleanly (not hang or throw).
         assertTrue("clean terminal exit, was " + r.code, r.code == 0 || r.code == 1);
         assertTrue("batch-mode banner", r.out.contains("Submitting Spark SQL Batch Job"));
-        assertTrue("reached a terminal state",
+        assertTrue(
+                "reached a terminal state",
                 r.out.contains("Job finished!") || r.out.contains("Job failed"));
     }
 
@@ -165,8 +195,8 @@ public class SparkSubmitCliE2ETest {
         args.add("20"); // a later --timeout wins over the default, forcing the timeout branch
         Result r = run(args);
         assertEquals("timeout exit code (stderr=" + tail(r.err) + ")", 124, r.code);
-        assertTrue("timeout message",
-                r.err.contains("Job timeout") || r.out.contains("Job timeout"));
+        assertTrue(
+                "timeout message", r.err.contains("Job timeout") || r.out.contains("Job timeout"));
     }
 
     // ---- failure path: a bad main class drives the batch to ERROR and exit 1 ----
@@ -180,8 +210,7 @@ public class SparkSubmitCliE2ETest {
         args.add("1");
         Result r = run(args);
         assertEquals("failure exit code (stderr=" + tail(r.err) + ")", 1, r.code);
-        assertTrue("failure report",
-                r.out.contains("Job failed") || r.out.contains("❌"));
+        assertTrue("failure report", r.out.contains("Job failed") || r.out.contains("❌"));
     }
 
     // ---- large SQL (>10KB) upload via the server plugin, then SQL batch orchestration ----
@@ -202,12 +231,14 @@ public class SparkSubmitCliE2ETest {
         args.add("-f");
         args.add(f.getAbsolutePath());
         Result r = run(args); // default (non-session) => SQL batch mode, triggers the upload
-        assertTrue("expected a server-side upload (stderr=" + tail(r.err) + ")",
+        assertTrue(
+                "expected a server-side upload (stderr=" + tail(r.err) + ")",
                 r.err.contains("uploaded via Kyuubi server") || r.err.contains("s3a://"));
         assertTrue("clean terminal exit, was " + r.code, r.code == 0 || r.code == 1);
     }
 
-    // ---- fast CLI paths that need no cluster (validation / usage), still driven through main() ----
+    // ---- fast CLI paths that need no cluster (validation / usage), still driven through main()
+    // ----
 
     @Test
     public void help_printsUsage() {
@@ -234,7 +265,8 @@ public class SparkSubmitCliE2ETest {
     // ---- argument builders ----
 
     private String jar() {
-        return env("KYUUBI_E2E_JAR", "local:///opt/spark/examples/jars/spark-examples_2.12-3.5.7.jar");
+        return env(
+                "KYUUBI_E2E_JAR", "local:///opt/spark/examples/jars/spark-examples_2.12-3.5.7.jar");
     }
 
     private String[] connArgs(String... extra) {
@@ -262,7 +294,9 @@ public class SparkSubmitCliE2ETest {
         a.add("--conf");
         a.add("spark.kubernetes.container.image=" + env("KYUUBI_E2E_IMAGE", "apache/spark:3.5.7"));
         a.add("--conf");
-        a.add("spark.kubernetes.authenticate.driver.serviceAccountName=" + env("KYUUBI_E2E_SA", "kyuubi"));
+        a.add(
+                "spark.kubernetes.authenticate.driver.serviceAccountName="
+                        + env("KYUUBI_E2E_SA", "kyuubi"));
         a.add("--conf");
         a.add("spark.kubernetes.namespace=" + env("KYUUBI_E2E_NAMESPACE", "kyuubi"));
         a.add("--conf");
@@ -287,7 +321,9 @@ public class SparkSubmitCliE2ETest {
         java.util.Map<String, String> c = new java.util.HashMap<>();
         c.put("spark.master", "k8s://https://kubernetes.default.svc");
         c.put("spark.kubernetes.container.image", env("KYUUBI_E2E_IMAGE", "apache/spark:3.5.7"));
-        c.put("spark.kubernetes.authenticate.driver.serviceAccountName", env("KYUUBI_E2E_SA", "kyuubi"));
+        c.put(
+                "spark.kubernetes.authenticate.driver.serviceAccountName",
+                env("KYUUBI_E2E_SA", "kyuubi"));
         c.put("spark.kubernetes.namespace", env("KYUUBI_E2E_NAMESPACE", "kyuubi"));
         return c;
     }
@@ -308,5 +344,15 @@ public class SparkSubmitCliE2ETest {
 
     private static String between(String s, String start, String end) {
         return CliRunner.between(s, start, end);
+    }
+
+    private static int countOccurrences(String s, String needle) {
+        int count = 0;
+        int i = 0;
+        while ((i = s.indexOf(needle, i)) >= 0) {
+            count++;
+            i += needle.length();
+        }
+        return count;
     }
 }

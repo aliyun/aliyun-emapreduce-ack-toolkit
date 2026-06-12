@@ -1,24 +1,24 @@
 package com.aliyun.emr.ack.client;
 
-import org.junit.Test;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import org.junit.Test;
 
 /**
- * Unit tests for the Server-Sent Events frame parser used by driver-log streaming. No network:
- * the parser is fed a canned SSE byte stream and the handler callbacks are asserted.
+ * Unit tests for the Server-Sent Events frame parser used by driver-log streaming. No network: the
+ * parser is fed a canned SSE byte stream and the handler callbacks are asserted.
  */
 public class KyuubiClientSseTest {
 
     private static KyuubiClient newClient() {
-        // Config only supplies auth/base-url, which the parser does not touch; a missing file is fine.
+        // Config only supplies auth/base-url, which the parser does not touch; a missing file is
+        // fine.
         return new KyuubiClient(new Config("/tmp/__sse_test_nonexistent.conf"));
     }
 
@@ -54,16 +54,16 @@ public class KyuubiClientSseTest {
     public void parsesLogEventsHeartbeatsAndEnd() throws IOException {
         String sse =
                 "event: log\n"
-                + "data: {\"line\":\"hello world\",\"timestamp\":111}\n"
-                + "\n"
-                + ": keepalive\n"          // comment heartbeat, ignored
-                + "\n"
-                + "event: log\n"
-                + "data: {\"line\":\"second\"}\n"   // no timestamp field -> 0
-                + "\n"
-                + "event: end\n"
-                + "data: {\"reason\":\"pod terminated\"}\n"
-                + "\n";
+                        + "data: {\"line\":\"hello world\",\"timestamp\":111}\n"
+                        + "\n"
+                        + ": keepalive\n" // comment heartbeat, ignored
+                        + "\n"
+                        + "event: log\n"
+                        + "data: {\"line\":\"second\"}\n" // no timestamp field -> 0
+                        + "\n"
+                        + "event: end\n"
+                        + "data: {\"reason\":\"pod terminated\"}\n"
+                        + "\n";
         CollectingHandler h = new CollectingHandler();
         KyuubiClient.DriverLogStreamResult result = parse(sse, h);
 
@@ -80,8 +80,13 @@ public class KyuubiClientSseTest {
     @Test
     public void stripsSingleLeadingSpaceAfterColon() throws IOException {
         // "data: {...}" (with a space) and "data:{...}" (without) must parse identically
-        String sse = "event: log\n" + "data:{\"line\":\"tight\"}\n" + "\n"
-                + "event: end\n" + "data: {\"reason\":\"done\"}\n" + "\n";
+        String sse =
+                "event: log\n"
+                        + "data:{\"line\":\"tight\"}\n"
+                        + "\n"
+                        + "event: end\n"
+                        + "data: {\"reason\":\"done\"}\n"
+                        + "\n";
         CollectingHandler h = new CollectingHandler();
         parse(sse, h);
         assertEquals("tight", h.lines.get(0));

@@ -1,15 +1,15 @@
 package com.aliyun.emr.ack.util;
 
 import com.aliyun.emr.ack.client.KyuubiClient;
-
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 
-/** Console presentation helpers: timestamps, durations, SQL display formatting and result tables. */
+/**
+ * Console presentation helpers: timestamps, durations, SQL display formatting and result tables.
+ */
 public final class Console {
-    private Console() {
-    }
+    private Console() {}
 
     public static String timestamp() {
         return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
@@ -49,7 +49,8 @@ public final class Console {
     }
 
     /** Print a result set as a bordered table (spark-sql style), followed by a row count. */
-    public static void printResultTable(List<KyuubiClient.ColumnDesc> columns, List<List<String>> rows) {
+    public static void printResultTable(
+            List<KyuubiClient.ColumnDesc> columns, List<List<String>> rows) {
         int numCols = columns.size();
 
         // Calculate column widths
@@ -77,7 +78,9 @@ public final class Console {
         System.out.println(sep);
         StringBuilder header = new StringBuilder("|");
         for (int i = 0; i < numCols; i++) {
-            header.append(" ").append(padRight(columns.get(i).getColumnName(), widths[i])).append(" |");
+            header.append(" ")
+                    .append(padRight(columns.get(i).getColumnName(), widths[i]))
+                    .append(" |");
         }
         System.out.println(header.toString());
         System.out.println(sep);

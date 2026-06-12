@@ -1,10 +1,5 @@
 package com.aliyun.emr.ack.client;
 
-import org.apache.http.NoHttpResponseException;
-import org.apache.http.conn.ConnectTimeoutException;
-
-import javax.net.ssl.SSLException;
-import javax.net.ssl.SSLHandshakeException;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
@@ -12,24 +7,29 @@ import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Random;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
+import org.apache.http.NoHttpResponseException;
+import org.apache.http.conn.ConnectTimeoutException;
 
 /**
- * Minimal retry engine with exponential backoff + full jitter, plus the
- * failure-classification policies used by the submission chain.
+ * Minimal retry engine with exponential backoff + full jitter, plus the failure-classification
+ * policies used by the submission chain.
  *
  * <p>Two policies are provided:
+ *
  * <ul>
- *   <li>{@link #isTransientNetwork} — for idempotent operations (OSS PUT,
- *       Kyuubi file upload): retries any transient network error plus 5xx/429.</li>
- *   <li>{@link #isConnectPhaseOnly} — for the non-idempotent batch submit:
- *       retries ONLY connection-establishment failures (request provably not
- *       sent), so a lost response can never cause a duplicate Spark job.</li>
+ *   <li>{@link #isTransientNetwork} — for idempotent operations (OSS PUT, Kyuubi file upload):
+ *       retries any transient network error plus 5xx/429.
+ *   <li>{@link #isConnectPhaseOnly} — for the non-idempotent batch submit: retries ONLY
+ *       connection-establishment failures (request provably not sent), so a lost response can never
+ *       cause a duplicate Spark job.
  * </ul>
  *
- * <p>Interruption during backoff is signalled with the dedicated
- * {@link RetryInterruptedException} (NOT {@link java.io.InterruptedIOException},
- * which is the parent of {@link SocketTimeoutException}/{@link ConnectTimeoutException}
- * and would make read/connect timeouts indistinguishable from Ctrl-C).
+ * <p>Interruption during backoff is signalled with the dedicated {@link RetryInterruptedException}
+ * (NOT {@link java.io.InterruptedIOException}, which is the parent of {@link
+ * SocketTimeoutException}/{@link ConnectTimeoutException} and would make read/connect timeouts
+ * indistinguishable from Ctrl-C).
  */
 public final class Retry {
 
@@ -64,8 +64,12 @@ public final class Retry {
         final double multiplier;
         final RetryPredicate predicate;
 
-        public RetryConfig(int maxAttempts, long initialBackoffMs, long maxBackoffMs,
-                           double multiplier, RetryPredicate predicate) {
+        public RetryConfig(
+                int maxAttempts,
+                long initialBackoffMs,
+                long maxBackoffMs,
+                double multiplier,
+                RetryPredicate predicate) {
             this.maxAttempts = Math.max(1, maxAttempts);
             this.initialBackoffMs = Math.max(0L, initialBackoffMs);
             this.maxBackoffMs = Math.max(this.initialBackoffMs, maxBackoffMs);
@@ -75,12 +79,13 @@ public final class Retry {
     }
 
     /**
-     * Run {@code op}, retrying transient failures per {@code cfg}. On a retryable
-     * failure that has attempts remaining, logs and sleeps (with jitter) before
-     * retrying; otherwise rethrows the original exception unchanged (preserving
-     * its message and any {@link HttpStatusException} status code).
+     * Run {@code op}, retrying transient failures per {@code cfg}. On a retryable failure that has
+     * attempts remaining, logs and sleeps (with jitter) before retrying; otherwise rethrows the
+     * original exception unchanged (preserving its message and any {@link HttpStatusException}
+     * status code).
      */
-    public static <T> T execute(String opName, RetryConfig cfg, RetryableOp<T> op) throws IOException {
+    public static <T> T execute(String opName, RetryConfig cfg, RetryableOp<T> op)
+            throws IOException {
         int attempt = 0;
         while (true) {
             attempt++;
@@ -91,9 +96,20 @@ public final class Retry {
                     throw e;
                 }
                 long sleepMs = computeBackoffWithJitter(cfg, attempt);
-                System.err.println("[" + ts() + "] " + opName + " failed (attempt "
-                        + attempt + "/" + cfg.maxAttempts + "): " + e.getMessage()
-                        + ", retrying in " + sleepMs + "ms");
+                System.err.println(
+                        "["
+                                + ts()
+                                + "] "
+                                + opName
+                                + " failed (attempt "
+                                + attempt
+                                + "/"
+                                + cfg.maxAttempts
+                                + "): "
+                                + e.getMessage()
+                                + ", retrying in "
+                                + sleepMs
+                                + "ms");
                 sleep(sleepMs, opName);
             }
         }
@@ -122,9 +138,9 @@ public final class Retry {
     }
 
     /**
-     * Retryable for idempotent operations: transient network errors and 5xx/429.
-     * {@link SSLHandshakeException} is excluded (invalid cert / protocol mismatch
-     * are stable failures; retrying only delays the inevitable).
+     * Retryable for idempotent operations: transient network errors and 5xx/429. {@link
+     * SSLHandshakeException} is excluded (invalid cert / protocol mismatch are stable failures;
+     * retrying only delays the inevitable).
      */
     public static boolean isTransientNetwork(IOException e) {
         if (e instanceof SSLHandshakeException) {
@@ -146,10 +162,10 @@ public final class Retry {
     }
 
     /**
-     * Retryable for the non-idempotent batch submit: ONLY connection-establishment
-     * failures where the request body was provably never sent. Read timeouts,
-     * {@code NoHttpResponseException}, 5xx and 429 are intentionally NOT retried —
-     * the batch may already have been created, and resending would duplicate it.
+     * Retryable for the non-idempotent batch submit: ONLY connection-establishment failures where
+     * the request body was provably never sent. Read timeouts, {@code NoHttpResponseException}, 5xx
+     * and 429 are intentionally NOT retried — the batch may already have been created, and
+     * resending would duplicate it.
      */
     public static boolean isConnectPhaseOnly(IOException e) {
         return e instanceof ConnectException
