@@ -1,4 +1,4 @@
-package com.aliyun.emr.ack;
+package com.aliyun.emr.ack.client;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.http.HttpHeaders;

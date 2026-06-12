@@ -1,4 +1,6 @@
-package com.aliyun.emr.ack;
+package com.aliyun.emr.ack.client;
+
+import com.aliyun.emr.ack.cli.SparkSubmitArgs;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -17,12 +19,19 @@ import org.apache.http.impl.client.DefaultHttpRequestRetryHandler;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+
+import lombok.Getter;
+import lombok.Setter;
 
 /**
  * Kyuubi REST API client
@@ -34,6 +43,9 @@ public class KyuubiClient {
     
     private static final int CONNECT_TIMEOUT_MS = 30 * 1000; // 30 seconds
     private static final int SOCKET_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    // A driver-log SSE connection is long-lived: the server sends heartbeat comments every ~15s, so
+    // anything past this window of total silence means the connection is dead rather than just idle.
+    private static final int DRIVER_LOG_STREAM_SOCKET_TIMEOUT_MS = 60 * 1000; // 1 minute
 
     public KyuubiClient(Config config) {
         this.config = config;
@@ -62,7 +74,9 @@ public class KyuubiClient {
      * be forwarded to Kyuubi/Spark as a batch or session config.
      */
     public static boolean isClientOnlyConf(String key) {
-        return key != null && key.startsWith("spark.submit.retry.");
+        return key != null
+                && (key.startsWith("spark.submit.retry.")
+                        || key.startsWith("spark.submit.driver.log."));
     }
     
     /**
@@ -203,6 +217,168 @@ public class KyuubiClient {
         }
     }
     
+    // =============================================
+    // Driver log streaming (Server-Sent Events)
+    // =============================================
+
+    /** The outcome of one {@link #streamDriverLog} connection attempt. */
+    public enum DriverLogStreamResult {
+        /** The server signalled an {@code end} event: this driver-log connection is complete. */
+        ENDED,
+        /** The connection dropped or errored before an {@code end} event; the caller may reconnect. */
+        DISCONNECTED,
+        /** The server returned 404: driver log streaming is disabled (or unsupported) server-side. */
+        DISABLED
+    }
+
+    /** Receives parsed driver-log Server-Sent Events. */
+    public interface DriverLogHandler {
+        /** A driver log line (already stripped of any container timestamp). */
+        void onLog(String line, long timestampMillis);
+        /** The stream ended normally with the given reason (e.g. "pod terminated"). */
+        void onEnd(String reason);
+        /** The server reported a streaming error. */
+        void onError(String message);
+    }
+
+    /**
+     * Open the batch's driver-pod log stream (Server-Sent Events) and pump events to {@code handler}
+     * until the stream ends, the connection drops, or the request is aborted. Blocks the calling
+     * thread. Driver log streaming is a Kyuubi 1.12+/Kubernetes feature; a 404 response means it is
+     * disabled server-side and is reported as {@link DriverLogStreamResult#DISABLED}.
+     *
+     * @param tailLines    number of trailing lines to start from (use 0 on reconnect to avoid
+     *                     re-dumping the tail; pair it with a small {@code sinceSeconds} lookback)
+     * @param sinceSeconds only return lines newer than this many seconds (0 = no lower bound)
+     * @param timestamps   whether the server should prefix each line with its container timestamp
+     * @param onConnected  receives an abort callback as soon as the request is created, so a caller
+     *                     on another thread can abort the in-flight request to stop streaming promptly
+     */
+    public DriverLogStreamResult streamDriverLog(
+            String batchId, int tailLines, int sinceSeconds, boolean timestamps,
+            Consumer<Runnable> onConnected, DriverLogHandler handler) throws IOException {
+        String url = config.getBaseUrl() + "/batches/" + batchId + "/driverLog/stream"
+                + "?tailLines=" + tailLines + "&sinceSeconds=" + sinceSeconds + "&timestamps=" + timestamps;
+
+        HttpGet get = new HttpGet(url);
+        get.setHeader(HttpHeaders.AUTHORIZATION, getAuthHeader());
+        get.setHeader(HttpHeaders.ACCEPT, "text/event-stream");
+        get.setConfig(RequestConfig.custom()
+                .setConnectTimeout(CONNECT_TIMEOUT_MS)
+                .setConnectionRequestTimeout(CONNECT_TIMEOUT_MS)
+                .setSocketTimeout(DRIVER_LOG_STREAM_SOCKET_TIMEOUT_MS)
+                .build());
+
+        if (onConnected != null) {
+            onConnected.accept(get::abort);
+        }
+
+        try (CloseableHttpResponse response = httpClient.execute(get)) {
+            int statusCode = response.getStatusLine().getStatusCode();
+            if (statusCode == 404) {
+                return DriverLogStreamResult.DISABLED;
+            }
+            if (statusCode < 200 || statusCode >= 300) {
+                HttpEntity entity = response.getEntity();
+                String body = entity != null ? EntityUtils.toString(entity, StandardCharsets.UTF_8) : "";
+                handler.onError("driver log stream returned HTTP " + statusCode + ": " + body);
+                return DriverLogStreamResult.DISCONNECTED;
+            }
+            HttpEntity entity = response.getEntity();
+            if (entity == null) {
+                return DriverLogStreamResult.DISCONNECTED;
+            }
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(entity.getContent(), StandardCharsets.UTF_8))) {
+                return readSseEvents(reader, handler);
+            }
+        } catch (SocketTimeoutException e) {
+            return DriverLogStreamResult.DISCONNECTED;
+        } catch (IOException e) {
+            if (get.isAborted()) {
+                return DriverLogStreamResult.DISCONNECTED; // we aborted on stop(), not a real failure
+            }
+            throw e;
+        }
+    }
+
+    /** Parse the SSE byte stream frame by frame until a terminal event or EOF. Visible for testing. */
+    DriverLogStreamResult readSseEvents(BufferedReader reader, DriverLogHandler handler)
+            throws IOException {
+        String eventName = null;
+        StringBuilder data = new StringBuilder();
+        String rawLine;
+        while ((rawLine = reader.readLine()) != null) {
+            if (rawLine.isEmpty()) {
+                // a blank line terminates the current event
+                if (eventName != null || data.length() > 0) {
+                    DriverLogStreamResult terminal = dispatchSseEvent(eventName, data.toString(), handler);
+                    if (terminal != null) {
+                        return terminal;
+                    }
+                }
+                eventName = null;
+                data.setLength(0);
+                continue;
+            }
+            if (rawLine.charAt(0) == ':') {
+                continue; // comment line (heartbeat keep-alive)
+            }
+            int colon = rawLine.indexOf(':');
+            String field = colon >= 0 ? rawLine.substring(0, colon) : rawLine;
+            String value = colon >= 0 ? rawLine.substring(colon + 1) : "";
+            if (value.startsWith(" ")) {
+                value = value.substring(1); // SSE strips a single leading space after the colon
+            }
+            if ("event".equals(field)) {
+                eventName = value;
+            } else if ("data".equals(field)) {
+                if (data.length() > 0) {
+                    data.append('\n');
+                }
+                data.append(value);
+            }
+            // id/retry and unknown fields are ignored
+        }
+        return DriverLogStreamResult.DISCONNECTED; // stream closed without an explicit end event
+    }
+
+    /** @return a terminal result when the event ends the stream, otherwise null to keep reading. */
+    private DriverLogStreamResult dispatchSseEvent(String eventName, String data, DriverLogHandler handler) {
+        if ("log".equals(eventName)) {
+            try {
+                JsonObject obj = gson.fromJson(data, JsonObject.class);
+                String line = obj != null && obj.has("line") ? obj.get("line").getAsString() : data;
+                long ts = obj != null && obj.has("timestamp") ? obj.get("timestamp").getAsLong() : 0L;
+                handler.onLog(line, ts);
+            } catch (RuntimeException e) {
+                handler.onLog(data, 0L); // be forgiving: surface the raw payload rather than dropping it
+            }
+            return null;
+        }
+        if ("end".equals(eventName)) {
+            handler.onEnd(extractJsonString(data, "reason", "end"));
+            return DriverLogStreamResult.ENDED;
+        }
+        if ("error".equals(eventName)) {
+            handler.onError(extractJsonString(data, "message", data));
+            return DriverLogStreamResult.DISCONNECTED;
+        }
+        return null; // unnamed/unknown event — ignore
+    }
+
+    private String extractJsonString(String data, String key, String fallback) {
+        try {
+            JsonObject obj = gson.fromJson(data, JsonObject.class);
+            if (obj != null && obj.has(key)) {
+                return obj.get(key).getAsString();
+            }
+        } catch (RuntimeException e) {
+            // fall through to the fallback
+        }
+        return fallback;
+    }
+
     /**
      * Kill a batch job
      */
@@ -486,6 +662,8 @@ public class KyuubiClient {
     /**
      * Batch response model
      */
+    @Getter
+    @Setter
     public static class BatchResponse {
         private String id;
         private String user;
@@ -500,79 +678,45 @@ public class KyuubiClient {
         private String state;
         private Long createTime;
         private Long endTime;
-        
-        // Getters and setters
-        public String getId() { return id; }
-        public void setId(String id) { this.id = id; }
-        public String getUser() { return user; }
-        public void setUser(String user) { this.user = user; }
-        public String getBatchType() { return batchType; }
-        public void setBatchType(String batchType) { this.batchType = batchType; }
-        public String getName() { return name; }
-        public void setName(String name) { this.name = name; }
-        public Long getAppStartTime() { return appStartTime; }
-        public void setAppStartTime(Long appStartTime) { this.appStartTime = appStartTime; }
-        public String getAppId() { return appId; }
-        public void setAppId(String appId) { this.appId = appId; }
-        public String getAppUrl() { return appUrl; }
-        public void setAppUrl(String appUrl) { this.appUrl = appUrl; }
-        public String getAppState() { return appState; }
-        public void setAppState(String appState) { this.appState = appState; }
-        public String getAppDiagnostic() { return appDiagnostic; }
-        public void setAppDiagnostic(String appDiagnostic) { this.appDiagnostic = appDiagnostic; }
-        public String getKyuubiInstance() { return kyuubiInstance; }
-        public void setKyuubiInstance(String kyuubiInstance) { this.kyuubiInstance = kyuubiInstance; }
-        public String getState() { return state; }
-        public void setState(String state) { this.state = state; }
-        public Long getCreateTime() { return createTime; }
-        public void setCreateTime(Long createTime) { this.createTime = createTime; }
-        public Long getEndTime() { return endTime; }
-        public void setEndTime(Long endTime) { this.endTime = endTime; }
-        
+
         public boolean isFinished() {
             return "FINISHED".equals(state) || "ERROR".equals(state) || "CANCELED".equals(state);
         }
     }
-    
+
     /**
      * Log response model
      */
+    @Getter
+    @Setter
     public static class LogResponse {
         private java.util.List<String> logRowSet;
         private Integer rowCount;
-        
-        public java.util.List<String> getLogRowSet() { return logRowSet; }
-        public void setLogRowSet(java.util.List<String> logRowSet) { this.logRowSet = logRowSet; }
-        public Integer getRowCount() { return rowCount; }
-        public void setRowCount(Integer rowCount) { this.rowCount = rowCount; }
     }
 
     /**
      * Session response model
      */
+    @Getter
+    @Setter
     public static class SessionResponse {
         private String identifier;
         private String kyuubiInstance;
-
-        public String getIdentifier() { return identifier; }
-        public void setIdentifier(String identifier) { this.identifier = identifier; }
-        public String getKyuubiInstance() { return kyuubiInstance; }
-        public void setKyuubiInstance(String kyuubiInstance) { this.kyuubiInstance = kyuubiInstance; }
     }
 
     /**
      * Operation response model (for executeStatement)
      */
+    @Getter
+    @Setter
     public static class OperationResponse {
         private String identifier;
-
-        public String getIdentifier() { return identifier; }
-        public void setIdentifier(String identifier) { this.identifier = identifier; }
     }
 
     /**
      * Operation event model
      */
+    @Getter
     public static class OperationEvent {
         private String statementId;
         private String remoteId;
@@ -587,19 +731,6 @@ public class KyuubiClient {
         private String sessionId;
         private String sessionUser;
 
-        public String getStatementId() { return statementId; }
-        public String getRemoteId() { return remoteId; }
-        public String getStatement() { return statement; }
-        public Boolean getShouldRunAsync() { return shouldRunAsync; }
-        public String getState() { return state; }
-        public Long getEventTime() { return eventTime; }
-        public Long getCreateTime() { return createTime; }
-        public Long getStartTime() { return startTime; }
-        public Long getCompleteTime() { return completeTime; }
-        public String getException() { return exception; }
-        public String getSessionId() { return sessionId; }
-        public String getSessionUser() { return sessionUser; }
-
         public boolean isTerminal() {
             if (state == null) return false;
             // Kyuubi may return states with or without _STATE suffix
@@ -613,16 +744,16 @@ public class KyuubiClient {
     /**
      * Result set metadata model
      */
+    @Getter
+    @Setter
     public static class ResultSetMetadata {
         private List<ColumnDesc> columns;
-
-        public List<ColumnDesc> getColumns() { return columns; }
-        public void setColumns(List<ColumnDesc> columns) { this.columns = columns; }
     }
 
     /**
      * Column description model
      */
+    @Getter
     public static class ColumnDesc {
         private String columnName;
         private String dataType;
@@ -630,47 +761,34 @@ public class KyuubiClient {
         private Integer precision;
         private Integer scale;
         private String comment;
-
-        public String getColumnName() { return columnName; }
-        public String getDataType() { return dataType; }
-        public Integer getColumnIndex() { return columnIndex; }
-        public Integer getPrecision() { return precision; }
-        public Integer getScale() { return scale; }
-        public String getComment() { return comment; }
     }
 
     /**
      * Row set response model
      */
+    @Getter
+    @Setter
     public static class RowSetResponse {
         private List<Row> rows;
         private Integer rowCount;
-
-        public List<Row> getRows() { return rows; }
-        public void setRows(List<Row> rows) { this.rows = rows; }
-        public Integer getRowCount() { return rowCount; }
-        public void setRowCount(Integer rowCount) { this.rowCount = rowCount; }
     }
 
     /**
      * Row model
      */
+    @Getter
+    @Setter
     public static class Row {
         private List<Field> fields;
-
-        public List<Field> getFields() { return fields; }
-        public void setFields(List<Field> fields) { this.fields = fields; }
     }
 
     /**
      * Field model
      */
+    @Getter
     public static class Field {
         private String dataType;
         private Object value;
-
-        public String getDataType() { return dataType; }
-        public Object getValue() { return value; }
     }
 }
 

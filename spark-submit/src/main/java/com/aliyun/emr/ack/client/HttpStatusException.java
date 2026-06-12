@@ -1,4 +1,4 @@
-package com.aliyun.emr.ack;
+package com.aliyun.emr.ack.client;
 
 import java.io.IOException;
 
