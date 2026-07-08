@@ -250,12 +250,34 @@ final class BatchMonitor {
                     }
                 }
 
+                // Idle timeout: no new logs and no driver activity for too long — the driver
+                // JVM is likely stuck (e.g. main thread died but SparkContext threads keep it
+                // alive).  Kill the batch rather than waiting forever.
+                long idleMillis = System.currentTimeMillis() - lastActivityTime;
+                if (idleMillis >= Polling.HEARTBEAT_TIMEOUT_MS) {
+                    long idleMin = idleMillis / 60000;
+                    System.err.println(
+                            "\n["
+                                    + Console.timestamp()
+                                    + "] No activity for "
+                                    + idleMin
+                                    + " minutes. The driver appears stuck; killing the job.");
+                    try {
+                        client.killBatch(batchId);
+                    } catch (IOException killError) {
+                        System.err.println(
+                                "Warning: Failed to kill job: " + killError.getMessage());
+                    }
+                    stop(driverStreamer);
+                    return ExitCode.TIMEOUT;
+                }
+
                 // Heartbeat message when idle
                 long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatLogTime;
                 if (timeSinceLastHeartbeat >= Polling.HEARTBEAT_LOG_INTERVAL_MS) {
                     if (!hasNewLogs && !recentDriverActivity) {
                         long elapsedSec = (System.currentTimeMillis() - startTimeMillis) / 1000;
-                        long idleMinutes = (System.currentTimeMillis() - lastActivityTime) / 60000;
+                        long idleMinutes = idleMillis / 60000;
                         System.out.println(
                                 "["
                                         + Console.timestamp()
